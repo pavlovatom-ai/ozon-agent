@@ -8,6 +8,8 @@ import uvicorn
 from main import Database, Config, OzonAPIClient
 from reporting import MonthlyReportAgent, REPORTS_DIR, delete_report, list_reports, previous_month_range, register_report, report_filename
 from analytics_dashboard import DashboardAnalytics, load_snapshot
+from unit_economics import UnitEconomicsInput, calculate_unit_economics, recommendation
+from competitor_monitor import check_competitor
 
 app = FastAPI(title="Ozon AI Helper - Web Interface")
 
@@ -199,6 +201,86 @@ async def analytics_page(request: Request):
         "analytics.html",
         {"snapshot": snapshot, "error": "", "selected_skus": selected_skus},
     )
+
+
+@app.get("/economics", response_class=HTMLResponse)
+async def economics_page(request: Request, sku: str = ""):
+    snapshot = load_snapshot()
+    available_skus = sorted({str(row.get("sku")) for row in snapshot.get("rows", []) if row.get("sku")})
+    selected_sku = sku or (available_skus[0] if available_skus else "")
+    values = db.get_sku_economics(selected_sku) if selected_sku else {
+        "cost": 0.0, "commission_rate": 0.0, "logistics": 0.0,
+        "tax_rate": 0.06, "other_expenses": 0.0, "minimum_margin_rate": 0.20,
+    }
+    return templates.TemplateResponse(request, "economics.html", {
+        "skus": available_skus,
+        "selected_sku": selected_sku,
+        "values": values,
+        "result": None,
+        "error": "",
+    })
+
+
+@app.get("/competitors", response_class=HTMLResponse)
+async def competitors_page(request: Request):
+    competitors = []
+    snapshot_rows = {str(row.get("sku")): row for row in load_snapshot().get("rows", [])}
+    for item in db.list_competitors():
+        economics = db.get_sku_economics(item["sku"])
+        our_price = float(snapshot_rows.get(item["sku"], {}).get("average_order_price") or item["current_price"])
+        safe_price = None
+        if economics["cost"] or economics["logistics"]:
+            safe_price = calculate_unit_economics(UnitEconomicsInput(
+                price=our_price, cost=economics["cost"], commission_rate=economics["commission_rate"],
+                logistics=economics["logistics"], tax_rate=economics["tax_rate"],
+                other_expenses=economics["other_expenses"], minimum_margin_rate=economics["minimum_margin_rate"],
+            )).minimum_safe_price
+        check = check_competitor(our_price, item["current_price"], safe_price)
+        item.update({"our_price": our_price, "status": check.status, "difference": check.difference, "minimum_safe_price": safe_price or "—", "economics": economics})
+        competitors.append(item)
+    return templates.TemplateResponse(request, "competitors.html", {"competitors": competitors, "error": ""})
+
+
+@app.post("/competitors")
+async def add_competitor(
+    sku: str = Form(...), name: str = Form(...), url: str = Form(""), current_price: float = Form(...)
+):
+    db.add_competitor(sku.strip(), name.strip(), url.strip(), current_price)
+    return RedirectResponse(url="/competitors", status_code=303)
+
+
+@app.post("/competitors/{competitor_id}/delete")
+async def remove_competitor(competitor_id: int):
+    db.delete_competitor(competitor_id)
+    return RedirectResponse(url="/competitors", status_code=303)
+
+
+@app.post("/economics", response_class=HTMLResponse)
+async def save_economics(
+    request: Request,
+    sku: str = Form(...),
+    price: float = Form(0),
+    cost: float = Form(0),
+    commission_rate: float = Form(0),
+    logistics: float = Form(0),
+    tax_rate: float = Form(0.06),
+    other_expenses: float = Form(0),
+    minimum_margin_rate: float = Form(0.20),
+):
+    values = {
+        "cost": cost, "commission_rate": commission_rate / 100,
+        "logistics": logistics, "tax_rate": tax_rate / 100,
+        "other_expenses": other_expenses, "minimum_margin_rate": minimum_margin_rate / 100,
+    }
+    db.set_sku_economics(sku, values)
+    inputs = UnitEconomicsInput(price=price, **values)
+    result = calculate_unit_economics(inputs)
+    snapshot = load_snapshot()
+    available_skus = sorted({str(row.get("sku")) for row in snapshot.get("rows", []) if row.get("sku")})
+    return templates.TemplateResponse(request, "economics.html", {
+        "skus": available_skus, "selected_sku": sku, "values": values,
+        "price": price, "result": result, "recommendation": recommendation(inputs), "error": "",
+    })
 
 
 @app.post("/analytics/refresh", response_class=HTMLResponse)

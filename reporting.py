@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from openai import OpenAI
 
 from main import Config, OzonAPIClient
+from unit_economics import UnitEconomicsInput, calculate_unit_economics, recommendation
 
 logger = logging.getLogger(__name__)
 REPORTS_DIR = Path(os.getenv("REPORTS_DIR", Path(__file__).resolve().parent / "reports"))
@@ -179,6 +180,27 @@ class OzonReportTools:
             raise ValueError("Поддерживаются операции sum, average, min, max")
         return {"operation": operation, "result": result, "currency": "RUB"}
 
+    def unit_economics(self, price: float, cost: float, commission_rate: float, logistics: float, tax_rate: float = 0.06, other_expenses: float = 0.0, minimum_margin_rate: float = 0.20) -> Dict:
+        inputs = UnitEconomicsInput(
+            price=price,
+            cost=cost,
+            commission_rate=commission_rate,
+            logistics=logistics,
+            tax_rate=tax_rate,
+            other_expenses=other_expenses,
+            minimum_margin_rate=minimum_margin_rate,
+        )
+        result = calculate_unit_economics(inputs)
+        return {
+            "net_profit": result.net_profit,
+            "net_margin_rate": result.net_margin_rate,
+            "roi": result.roi,
+            "minimum_safe_price": result.minimum_safe_price,
+            "total_expenses": result.total_expenses,
+            "recommendation": recommendation(inputs),
+            "currency": "RUB",
+        }
+
 
 class MonthlyReportAgent:
     def __init__(self, ozon: Optional[OzonAPIClient] = None):
@@ -202,6 +224,7 @@ class MonthlyReportAgent:
             {"type": "function", "function": {"name": "get_stocks", "description": "Получить остатки и оборачиваемость для переданных SKU.", "parameters": {"type": "object", "properties": {"skus": {"type": "array", "items": {"type": "string"}}}, "required": ["skus"]}}},
             {"type": "function", "function": {"name": "get_prices", "description": "Получить цены и комиссии для переданных SKU.", "parameters": {"type": "object", "properties": {"skus": {"type": "array", "items": {"type": "string"}}}, "required": ["skus"]}}},
             {"type": "function", "function": {"name": "calculate", "description": "Посчитать сумму, среднее, минимум или максимум чисел в RUB.", "parameters": {"type": "object", "properties": {"operation": {"type": "string", "enum": ["sum", "average", "min", "max"]}, "values": {"type": "array", "items": {"type": "number"}}}, "required": ["operation", "values"]}}},
+            {"type": "function", "function": {"name": "calculate_unit_economics", "description": "Рассчитать прибыль, маржу, ROI и минимальную безопасную цену SKU в RUB.", "parameters": {"type": "object", "properties": {"price": {"type": "number"}, "cost": {"type": "number"}, "commission_rate": {"type": "number"}, "logistics": {"type": "number"}, "tax_rate": {"type": "number"}, "other_expenses": {"type": "number"}, "minimum_margin_rate": {"type": "number"}}, "required": ["price", "cost", "commission_rate", "logistics"]}}},
         ]
 
     def _invoke(self, name: str, arguments: Dict) -> Dict:
@@ -220,6 +243,8 @@ class MonthlyReportAgent:
                 return self.tools.prices(**arguments)
             if name == "calculate":
                 return self.tools.calculate(**arguments)
+            if name == "calculate_unit_economics":
+                return self.tools.unit_economics(**arguments)
             return {"error": f"Неизвестный инструмент: {name}"}
         except Exception as exc:
             logger.exception("Report tool failed: %s", name)

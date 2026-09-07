@@ -174,6 +174,29 @@ class Database:
                 )
             ''')
 
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS sku_economics (
+                    sku TEXT PRIMARY KEY,
+                    cost REAL DEFAULT 0,
+                    commission_rate REAL DEFAULT 0,
+                    logistics REAL DEFAULT 0,
+                    tax_rate REAL DEFAULT 0.06,
+                    other_expenses REAL DEFAULT 0,
+                    minimum_margin_rate REAL DEFAULT 0.20,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS competitors (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sku TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    url TEXT,
+                    current_price REAL DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
             # Отзывы пропускаем
             conn.commit()
             logger.info("База данных инициализирована")
@@ -228,6 +251,53 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+            conn.commit()
+
+    def get_sku_economics(self, sku: str) -> Dict[str, float]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT cost, commission_rate, logistics, tax_rate, other_expenses, minimum_margin_rate
+                FROM sku_economics WHERE sku = ?
+            ''', (str(sku),))
+            row = cursor.fetchone()
+        if not row:
+            return {
+                "cost": 0.0,
+                "commission_rate": 0.0,
+                "logistics": 0.0,
+                "tax_rate": 0.06,
+                "other_expenses": 0.0,
+                "minimum_margin_rate": 0.20,
+            }
+        keys = ("cost", "commission_rate", "logistics", "tax_rate", "other_expenses", "minimum_margin_rate")
+        return dict(zip(keys, row))
+
+    def set_sku_economics(self, sku: str, values: Dict[str, float]):
+        with self.get_connection() as conn:
+            conn.execute('''
+                INSERT OR REPLACE INTO sku_economics
+                (sku, cost, commission_rate, logistics, tax_rate, other_expenses, minimum_margin_rate, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ''', (
+                str(sku), values["cost"], values["commission_rate"], values["logistics"],
+                values["tax_rate"], values["other_expenses"], values["minimum_margin_rate"],
+            ))
+            conn.commit()
+
+    def list_competitors(self) -> List[Dict]:
+        with self.get_connection() as conn:
+            rows = conn.execute("SELECT id, sku, name, url, current_price, updated_at FROM competitors ORDER BY sku, name").fetchall()
+        return [dict(zip(("id", "sku", "name", "url", "current_price", "updated_at"), row)) for row in rows]
+
+    def add_competitor(self, sku: str, name: str, url: str, current_price: float):
+        with self.get_connection() as conn:
+            conn.execute("INSERT INTO competitors (sku, name, url, current_price) VALUES (?, ?, ?, ?)", (sku, name, url, current_price))
+            conn.commit()
+
+    def delete_competitor(self, competitor_id: int):
+        with self.get_connection() as conn:
+            conn.execute("DELETE FROM competitors WHERE id = ?", (competitor_id,))
             conn.commit()
 
     def save_questions(self, questions_data: Dict):

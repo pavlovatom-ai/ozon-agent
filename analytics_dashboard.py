@@ -5,8 +5,9 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
-from main import Config, OzonAPIClient
+from main import Config, Database, OzonAPIClient
 from reporting import OzonReportTools, current_month_range
+from unit_economics import UnitEconomicsInput, calculate_unit_economics, recommendation
 
 logger = logging.getLogger(__name__)
 SNAPSHOT_PATH = Path(os.getenv("ANALYTICS_SNAPSHOT_PATH", Path(__file__).resolve().parent / "reports" / "analytics-dashboard.json"))
@@ -86,6 +87,7 @@ class DashboardAnalytics:
     def __init__(self, client: OzonAPIClient = None):
         self.client = client or OzonAPIClient(Config.OZON_CLIENT_ID, Config.OZON_API_KEY)
         self.tools = OzonReportTools(self.client)
+        self.db = Database()
 
     def refresh(self, date_from: str = None, date_to: str = None) -> Dict:
         if not date_from or not date_to:
@@ -116,6 +118,16 @@ class DashboardAnalytics:
             days = max((date.fromisoformat(date_to) - date.fromisoformat(date_from)).days + 1, 1)
             stock = stock_map.get(sku, {})
             available = _number(_first(stock, "available_stock_count", "available", "stock"))
+            economics = self.db.get_sku_economics(sku)
+            economics_result = calculate_unit_economics(UnitEconomicsInput(
+                price=revenue / ordered if ordered else 0,
+                cost=economics["cost"],
+                commission_rate=economics["commission_rate"],
+                logistics=economics["logistics"],
+                tax_rate=economics["tax_rate"],
+                other_expenses=economics["other_expenses"],
+                minimum_margin_rate=economics["minimum_margin_rate"],
+            ))
             rows.append({
                 "category": "—",
                 "model": "—",
@@ -124,18 +136,25 @@ class DashboardAnalytics:
                 "abc_revenue": "—",
                 "abc_margin": "—",
                 "revenue": revenue,
-                "gross_profit": "—",
-                "margin": "—",
-                "roi": "—",
+                "gross_profit": economics_result.net_profit,
+                "margin": economics_result.net_margin_rate * 100,
+                "roi": economics_result.roi * 100 if economics_result.roi is not None else "—",
                 "revenue_per_unit": revenue / delivered if delivered else 0,
                 "average_order_price": revenue / ordered if ordered else 0,
-                "cost": "—",
+                "cost": economics["cost"],
                 "advertising": "—",
-                "ozon_expenses": "—",
-                "commission": "—",
-                "logistics": "—",
-                "tax": "—",
-                "own_expenses": "—",
+                "ozon_expenses": economics_result.total_expenses - economics["cost"] - economics["tax_rate"] * (revenue / ordered if ordered else 0),
+                "commission": economics["commission_rate"] * 100,
+                "logistics": economics["logistics"],
+                "tax": economics["tax_rate"] * 100,
+                "own_expenses": economics["other_expenses"],
+                "minimum_safe_price": economics_result.minimum_safe_price or "—",
+                "economics_recommendation": recommendation(UnitEconomicsInput(
+                    price=revenue / ordered if ordered else 0,
+                    cost=economics["cost"], commission_rate=economics["commission_rate"],
+                    logistics=economics["logistics"], tax_rate=economics["tax_rate"],
+                    other_expenses=economics["other_expenses"], minimum_margin_rate=economics["minimum_margin_rate"],
+                )),
                 "impressions": impressions,
                 "ctr": clicks / impressions * 100 if impressions else "—",
                 "clicks": clicks,

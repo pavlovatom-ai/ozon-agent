@@ -19,14 +19,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Compile Python
-        run: python -m py_compile main.py web.py reporting.py analytics_dashboard.py
+        run: python -m py_compile main.py web.py reporting.py analytics_dashboard.py unit_economics.py competitor_monitor.py
       - name: Validate templates and helpers
         run: |
           python - <<'PY'
           from web import templates
           from reporting import report_period_range
           from datetime import date
-          for name in ("base.html", "settings.html", "analytics.html", "reports.html", "report_detail.html"):
+          for name in ("base.html", "settings.html", "analytics.html", "economics.html", "competitors.html", "reports.html", "report_detail.html"):
               templates.get_template(name)
           assert report_period_range("current_year", date(2026, 9, 7))[0].isoformat() == "2026-01-01"
           print("Validation passed")

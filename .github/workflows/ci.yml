@@ -21,6 +21,10 @@ jobs:
       - name: Compile Python
         run: python -m py_compile main.py web.py reporting.py analytics_dashboard.py unit_economics.py competitor_monitor.py
       - name: Validate templates and helpers
+        env:
+          OZON_CLIENT_ID: "ci-placeholder"
+          OZON_API_KEY: "ci-placeholder"
+          OPENROUTER_API_KEY: "ci-placeholder"
         run: |
           python - <<'PY'
           from web import templates

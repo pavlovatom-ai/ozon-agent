@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3">
+    <h1 class="mb-0">{{ filename }}</h1>
+    <div class="d-flex gap-2">
+        <a class="btn btn-primary" href="/reports/{{ filename }}/download">Скачать .md</a>
+        <a class="btn btn-outline-secondary" href="/reports">К списку отчётов</a>
+    </div>
+</div>
+<div class="card shadow-sm border-0">
+    <div class="card-body">
+        <article class="report-content">
+            {{ rendered_content | safe }}
+        </article>
+    </div>
+</div>
+<style>
+    .report-content { line-height: 1.65; color: #263238; }
+    .report-content h1, .report-content h2, .report-content h3 { margin-top: 1.5rem; margin-bottom: .75rem; color: #17212b; }
+    .report-content h1:first-child, .report-content h2:first-child { margin-top: 0; }
+    .report-content table { width: 100%; margin: 1rem 0; border-collapse: collapse; font-size: .95rem; }
+    .report-content th { background: #f1f5f9; font-weight: 600; }
+    .report-content th, .report-content td { padding: .65rem .75rem; border: 1px solid #dee2e6; vertical-align: top; }
+    .report-content blockquote { margin: 1rem 0; padding: .75rem 1rem; border-left: 4px solid #0d6efd; background: #f8f9fa; color: #495057; }
+    .report-content code { padding: .15rem .35rem; border-radius: .25rem; background: #f1f3f5; }
+    .report-content pre { padding: 1rem; border-radius: .5rem; background: #212529; color: #f8f9fa; overflow-x: auto; }
+    .report-content pre code { padding: 0; background: transparent; color: inherit; }
+    .report-content ul, .report-content ol { padding-left: 1.5rem; }
+</style>
+{% endblock %}

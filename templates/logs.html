@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Вопросы и ответы</h1>
+
+<form method="get" action="/logs" class="row g-2 align-items-end mb-4">
+    <div class="col-md-3">
+        <label class="form-label">SKU</label>
+        <select class="form-select" name="sku">
+            <option value="">Все SKU</option>
+            {% for sku in all_skus %}
+            <option value="{{ sku }}" {% if filters.sku == sku|string %}selected{% endif %}>{{ sku }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="col-md-2">
+        <label class="form-label">Статус</label>
+        <select class="form-select" name="status">
+            <option value="all" {% if filters.status == 'all' %}selected{% endif %}>Все</option>
+            <option value="pending" {% if filters.status == 'pending' %}selected{% endif %}>Ожидает подтверждения</option>
+            <option value="ai" {% if filters.status == 'ai' %}selected{% endif %}>ИИ</option>
+            <option value="manual" {% if filters.status == 'manual' %}selected{% endif %}>Ручная проверка</option>
+            <option value="edited" {% if filters.status == 'edited' %}selected{% endif %}>Редактировано</option>
+            <option value="new" {% if filters.status == 'new' %}selected{% endif %}>Новые</option>
+        </select>
+    </div>
+    <div class="col-md-2">
+        <label class="form-label">Дата от</label>
+        <input type="date" class="form-control" name="date_from" value="{{ filters.date_from }}">
+    </div>
+    <div class="col-md-2">
+        <label class="form-label">Дата до</label>
+        <input type="date" class="form-control" name="date_to" value="{{ filters.date_to }}">
+    </div>
+    <div class="col-md-2">
+        <label class="form-label">Сортировка</label>
+        <select class="form-select" name="sort_by">
+            <option value="date_desc" {% if filters.sort_by == 'date_desc' %}selected{% endif %}>По дате ↓</option>
+            <option value="date_asc" {% if filters.sort_by == 'date_asc' %}selected{% endif %}>По дате ↑</option>
+            <option value="sku_asc" {% if filters.sort_by == 'sku_asc' %}selected{% endif %}>SKU ↑</option>
+            <option value="sku_desc" {% if filters.sort_by == 'sku_desc' %}selected{% endif %}>SKU ↓</option>
+            <option value="status" {% if filters.sort_by == 'status' %}selected{% endif %}>По статусу</option>
+            <option value="publication" {% if filters.sort_by == 'publication' %}selected{% endif %}>По публикации</option>
+        </select>
+    </div>
+    <div class="col-md-1 d-grid">
+        <button type="submit" class="btn btn-primary">Применить</button>
+    </div>
+</form>
+
+<div class="mb-3 text-muted small">Показано: {{ logs|length }} записей</div>
+
+<table class="table table-striped align-middle">
+    <thead>
+        <tr>
+            <th>SKU</th>
+            <th>Вопрос</th>
+            <th>Ответ</th>
+            <th>Статус</th>
+            <th>Публикация</th>
+            <th>Дата</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for log in logs %}
+        <tr>
+            <td>{{ log.sku }}</td>
+            <td>{{ log.question }}</td>
+            <td>
+                {% if log.pending or log.manual %}
+                <form method="post" action="/logs/approve" class="d-flex flex-column gap-2">
+                    <input type="hidden" name="question_id" value="{{ log.id }}">
+                    <textarea class="form-control form-control-sm" name="answer_text" rows="3">{{ log.answer }}</textarea>
+                    <button type="submit" class="btn btn-sm btn-success">Подтвердить и отправить</button>
+                </form>
+                {% else %}
+                {{ log.answer or '—' }}
+                {% endif %}
+            </td>
+            <td>
+                {% if log.pending %}
+                <span class="badge bg-warning text-dark">Ожидает подтверждения</span>
+                {% elif log.is_ai_generated %}
+                <span class="badge bg-info text-dark">ИИ</span>
+                {% else %}
+                <span class="badge bg-secondary">Ручной / редакт.</span>
+                {% endif %}
+                <div class="small text-muted mt-1">{{ log.status }}</div>
+            </td>
+            <td class="text-center">
+                {% if log.publication_status == 'PUBLISHED' %}
+                <span class="text-success fs-5" title="Опубликован">✓</span>
+                {% elif log.publication_status == 'NOT_PUBLISHED' %}
+                <span class="text-danger fs-5" title="Не опубликован">✕</span>
+                {% elif log.publication_status == 'MODERATION' %}
+                <span class="text-warning fs-5" title="На модерации">⏳</span>
+                {% else %}
+                <span class="text-muted fs-5" title="Нет статуса">—</span>
+                {% endif %}
+            </td>
+            <td>{{ log.date }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

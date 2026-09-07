@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile Python
+        run: python -m py_compile main.py web.py reporting.py analytics_dashboard.py
+      - name: Validate templates and helpers
+        run: |
+          python - <<'PY'
+          from web import templates
+          from reporting import report_period_range
+          from datetime import date
+          for name in ("base.html", "settings.html", "analytics.html", "reports.html", "report_detail.html"):
+              templates.get_template(name)
+          assert report_period_range("current_year", date(2026, 9, 7))[0].isoformat() == "2026-01-01"
+          print("Validation passed")
+          PY
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build --tag ozon-agent:ci .

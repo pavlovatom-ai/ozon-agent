@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Инструкции для SKU</h1>
+<div class="row">
+    <div class="col-md-6">
+        <h3>Существующие инструкции</h3>
+        <ul class="list-group">
+            {% for inst in instructions %}
+            <li class="list-group-item">
+                <strong>{{ inst.sku }}</strong> (обновлено {{ inst.updated }})<br>
+                <form method="post" action="/instructions" enctype="multipart/form-data">
+                    <input type="hidden" name="sku" value="{{ inst.sku }}">
+                    <input type="hidden" name="existing_file_name" value="{{ '; '.join(inst.files) if inst.files else '' }}">
+                    <div class="mb-2">
+                        <label for="instruction_text_{{ loop.index }}" class="form-label">Текст инструкции</label>
+                        <textarea class="form-control" id="instruction_text_{{ loop.index }}" name="instruction_text" rows="4">{{ inst.text }}</textarea>
+                    </div>
+                    <div class="mb-2">
+                        <label for="file_{{ loop.index }}" class="form-label">Дополнительный файл (текстовый)</label>
+                        <input class="form-control" type="file" id="file_{{ loop.index }}" name="files" accept=".txt,.md,.csv" multiple>
+                        {% if inst.files %}
+                        <div class="mt-2">
+                            {% for file_name in inst.files %}
+                            <div class="d-inline-flex align-items-center gap-2 me-2 mb-2 small text-success border rounded px-2 py-1">
+                                <span>{{ file_name }}</span>
+                                <button type="submit" name="remove_file_name" value="{{ file_name }}" class="btn btn-link btn-sm p-0 text-danger" title="Удалить файл">×</button>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% else %}
+                        <div class="form-text">Файл ещё не выбран.</div>
+                        {% endif %}
+                    </div>
+                    <button type="submit" class="btn btn-sm btn-primary mt-1">Обновить</button>
+                </form>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    <div class="col-md-6">
+        <h3>Добавить инструкцию для SKU</h3>
+        <form method="post" action="/instructions" enctype="multipart/form-data">
+            <div class="mb-3">
+                <label for="sku" class="form-label">Выберите SKU</label>
+                <select class="form-select" id="sku" name="sku">
+                    {% for sku in all_skus %}
+                    <option value="{{ sku }}">{{ sku }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="mb-3">
+                <label for="instruction_text" class="form-label">Текст инструкции</label>
+                <textarea class="form-control" id="instruction_text" name="instruction_text" rows="5"></textarea>
+            </div>
+            <div class="mb-3">
+                <label for="file" class="form-label">Файлы с инструкцией (дополнительно)</label>
+                <input class="form-control" type="file" id="file" name="files" accept=".txt,.md,.csv" multiple>
+                <div class="form-text">Можно выбрать сразу несколько текстовых файлов. Их содержимое будет добавлено после текстовой инструкции.</div>
+            </div>
+            <button type="submit" class="btn btn-success">Сохранить</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

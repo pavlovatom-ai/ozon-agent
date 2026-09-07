@@ -1,0 +1,32 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Runtime state
+*.db
+*.sqlite
+*.sqlite3
+*.log
+runtime/
+reports/*.md
+reports/analytics-dashboard.json
+reports/report-metadata.json
+sku-inst.py
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+
+# Test and build output
+.pytest_cache/
+.coverage
+htmlcov/

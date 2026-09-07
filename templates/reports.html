@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+    <div>
+        <h1 class="mb-1">Финансовые отчёты</h1>
+        <div class="text-secondary">Агент собирает данные Ozon, проверяет показатели и сохраняет результат в Markdown.</div>
+    </div>
+</div>
+
+{% if error %}
+<div class="alert alert-danger" role="alert">
+    <strong>Не удалось сформировать отчёт.</strong><br>{{ error }}
+</div>
+{% endif %}
+
+<div class="card shadow-sm border-0 mb-4">
+    <div class="card-body">
+        <h5 class="card-title">Сформировать новый отчёт</h5>
+        <form method="post" action="/reports" class="row g-3 align-items-end">
+            <div class="col-md-4">
+                <label for="date_from" class="form-label">Начало периода</label>
+                <input type="date" class="form-control" id="date_from" name="date_from" value="{{ date_from }}" required>
+            </div>
+            <div class="col-md-4">
+                <label for="date_to" class="form-label">Конец периода</label>
+                <input type="date" class="form-control" id="date_to" name="date_to" value="{{ date_to }}" required>
+            </div>
+            <div class="col-md-4">
+                <button type="submit" class="btn btn-primary w-100">Сформировать отчёт</button>
+            </div>
+            <div class="col-12">
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="ignore_zero_impact_skus" name="ignore_zero_impact_skus" value="1">
+                    <label class="form-check-label" for="ignore_zero_impact_skus">
+                        Не акцентировать SKU с нулевым или почти нулевым влиянием за выбранный период
+                    </label>
+                </div>
+                <div class="form-text">Такие товары не попадут в подробные таблицы и рекомендации, но могут быть упомянуты общей строкой.</div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card shadow-sm border-0">
+    <div class="card-body">
+        <h5 class="card-title">Сохранённые отчёты</h5>
+        {% if reports %}
+        <div class="list-group list-group-flush">
+            {% for report in reports %}
+            <div class="list-group-item d-flex justify-content-between align-items-center gap-3 px-0">
+                <a href="/reports/{{ report.filename }}" class="text-decoration-none flex-grow-1">
+                    <span>{{ report.title }}</span>
+                    <small class="text-secondary ms-2">{{ report.source }} · {{ report.date }}</small>
+                </a>
+                <form method="post" action="/reports/{{ report.filename }}/delete" onsubmit="return confirm('Удалить этот отчёт?');">
+                    <button type="submit" class="btn btn-sm btn-outline-danger" title="Удалить отчёт" aria-label="Удалить отчёт">×</button>
+                </form>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-secondary">Отчётов пока нет.</div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

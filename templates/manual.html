@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Вопросы, требующие ручного ответа</h1>
+{% if questions %}
+    {% for q in questions %}
+    <div class="card mb-3">
+        <div class="card-header">
+            SKU: {{ q.sku }} | ID: {{ q.id }} | {{ q.date }}
+        </div>
+        <div class="card-body">
+            <p><strong>Вопрос:</strong> {{ q.text }}</p>
+            <form method="post" action="/manual/answer">
+                <input type="hidden" name="question_id" value="{{ q.id }}">
+                <div class="mb-3">
+                    <label for="answer_text" class="form-label">Ваш ответ:</label>
+                    <textarea class="form-control" id="answer_text" name="answer_text" rows="4" required></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary">Отправить ответ</button>
+            </form>
+        </div>
+    </div>
+    {% endfor %}
+{% else %}
+    <p>Нет вопросов, ожидающих ручного ответа.</p>
+{% endif %}
+{% endblock %}

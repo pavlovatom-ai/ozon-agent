@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.db
+*.sqlite
+*.sqlite3
+*.log
+runtime/
+reports/*.md
+reports/analytics-dashboard.json
+reports/report-metadata.json
+.git/
+.github/

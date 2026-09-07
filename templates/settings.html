@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Настройки</h1>
+<form method="post" action="/settings">
+    <div class="mb-3">
+        <label for="ozon_client_id" class="form-label">Client-Id</label>
+        <input type="text" class="form-control" id="ozon_client_id" name="ozon_client_id" value="{{ env.OZON_CLIENT_ID }}">
+    </div>
+    <div class="mb-3">
+        <label for="ozon_api_key" class="form-label">API-Key</label>
+        <input type="text" class="form-control" id="ozon_api_key" name="ozon_api_key" value="{{ env.OZON_API_KEY }}">
+    </div>
+    <div class="mb-3">
+        <label for="openrouter_api_key" class="form-label">OpenRouter API Key</label>
+        <input type="text" class="form-control" id="openrouter_api_key" name="openrouter_api_key" value="{{ env.OPENROUTER_API_KEY }}">
+    </div>
+    <div class="mb-3">
+        <label for="processing_mode" class="form-label">Режим обработки</label>
+        <select class="form-select" id="processing_mode" name="processing_mode">
+            {% for code, label in processing_modes %}
+            <option value="{{ code }}" {% if processing_mode == code %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="mb-3">
+        <label for="system_prompt" class="form-label">Системный промт (для ИИ)</label>
+        <textarea class="form-control" id="system_prompt" name="system_prompt" rows="8">{{ system_prompt }}</textarea>
+    </div>
+    <hr class="my-4">
+    <h2 class="h4">Автоматические отчёты</h2>
+    <div class="form-check form-switch mb-3">
+        <input class="form-check-input" type="checkbox" role="switch" id="reports_auto_enabled" name="reports_auto_enabled" value="1" {% if reports_auto_enabled %}checked{% endif %}>
+        <label class="form-check-label" for="reports_auto_enabled">Создавать отчёты автоматически</label>
+    </div>
+    <div class="row g-3 mb-3">
+        <div class="col-md-6">
+            <label for="reports_schedule" class="form-label">Периодичность запуска</label>
+            <select class="form-select" id="reports_schedule" name="reports_schedule">
+                <option value="daily" {% if reports_schedule == "daily" %}selected{% endif %}>Каждый день</option>
+                <option value="weekly" {% if reports_schedule == "weekly" %}selected{% endif %}>Раз в неделю</option>
+                <option value="monthly" {% if reports_schedule == "monthly" %}selected{% endif %}>Раз в месяц</option>
+                <option value="quarterly" {% if reports_schedule == "quarterly" %}selected{% endif %}>Раз в квартал</option>
+                <option value="half_yearly" {% if reports_schedule == "half_yearly" %}selected{% endif %}>Раз в полугодие</option>
+                <option value="yearly" {% if reports_schedule == "yearly" %}selected{% endif %}>Раз в год</option>
+            </select>
+        </div>
+        <div class="col-md-6">
+            <label for="reports_period" class="form-label">Период анализа</label>
+            <select class="form-select" id="reports_period" name="reports_period">
+                <option value="current_month" {% if reports_period == "current_month" %}selected{% endif %}>Текущий месяц</option>
+                <option value="previous_month" {% if reports_period == "previous_month" %}selected{% endif %}>Предыдущий месяц</option>
+                <option value="current_quarter" {% if reports_period == "current_quarter" %}selected{% endif %}>Текущий квартал</option>
+                <option value="current_half_year" {% if reports_period == "current_half_year" %}selected{% endif %}>Текущее полугодие</option>
+                <option value="current_year" {% if reports_period == "current_year" %}selected{% endif %}>Текущий год</option>
+            </select>
+        </div>
+    </div>
+    <hr class="my-4">
+    <h2 class="h4">Автоматическое обновление аналитики</h2>
+    <div class="form-check form-switch mb-3">
+        <input class="form-check-input" type="checkbox" role="switch" id="analytics_auto_enabled" name="analytics_auto_enabled" value="1" {% if analytics_auto_enabled %}checked{% endif %}>
+        <label class="form-check-label" for="analytics_auto_enabled">Обновлять таблицу автоматически</label>
+    </div>
+    <div class="mb-3">
+        <label for="analytics_schedule" class="form-label">Периодичность обновления</label>
+        <select class="form-select" id="analytics_schedule" name="analytics_schedule">
+            <option value="daily" {% if analytics_schedule == "daily" %}selected{% endif %}>Каждый день</option>
+            <option value="weekly" {% if analytics_schedule == "weekly" %}selected{% endif %}>Раз в неделю</option>
+        </select>
+    </div>
+    <button type="submit" class="btn btn-primary">Сохранить</button>
+</form>
+{% endblock %}

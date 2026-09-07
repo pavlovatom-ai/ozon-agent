@@ -17,6 +17,7 @@ REMOTE_COMMIT="$(git rev-parse "origin/$BRANCH")"
 
 if [[ "$LOCAL_COMMIT" == "$REMOTE_COMMIT" ]]; then
     echo "Already up to date: ${LOCAL_COMMIT:0:12}"
+    docker compose up -d --remove-orphans
     exit 0
 fi
 

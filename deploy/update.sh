@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 APP_DIR="${APP_DIR:-/opt/ozon-agent}"
 BRANCH="${BRANCH:-main}"
-LOCK_FILE="/run/lock/ozon-agent-update.lock"
+LOCK_FILE="${LOCK_FILE:-${XDG_RUNTIME_DIR:-/tmp}/ozon-agent-update.lock}"
 
 mkdir -p "$(dirname "$LOCK_FILE")"
 exec 9>"$LOCK_FILE"

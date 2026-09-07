@@ -47,3 +47,39 @@ Worker вопросов и автоматических задач запуск�
 ```
 
 CI проверяет компиляцию Python, Jinja-шаблоны и сборку Docker-образа.
+
+## CD на сервере
+
+CD использует публичный GitHub-репозиторий и проверяет `main` каждые 5 минут.
+При обновлении выполняется `docker compose up --build -d`; `.env` не трогается,
+а база, отчёты и снимки аналитики сохраняются в Docker volume `ozon_runtime`.
+
+Первоначальная установка на сервере:
+
+```bash
+sudo mkdir -p /opt/ozon-agent
+sudo chown "$USER":"$USER" /opt/ozon-agent
+git clone https://github.com/pavlovatom-ai/ozon-agent.git /opt/ozon-agent
+cd /opt/ozon-agent
+cp .env.example .env
+chmod 600 .env
+# заполните .env ключами на сервере
+docker compose up --build -d
+
+sudo install -m 0755 deploy/update.sh /opt/ozon-agent/deploy/update.sh
+sudo install -m 0644 deploy/ozon-agent-update.service /etc/systemd/system/
+sudo install -m 0644 deploy/ozon-agent-update.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now ozon-agent-update.timer
+```
+
+Проверка CD:
+
+```bash
+sudo systemctl start ozon-agent-update.service
+systemctl status ozon-agent-update.timer
+docker compose ps
+docker compose logs --tail=100 web worker
+```
+
+Не используйте `docker compose down -v`: эта команда удалит volume с базой и отчётами.

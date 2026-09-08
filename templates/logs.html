@@ -1,6 +1,72 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>Вопросы и ответы</h1>
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3">
+    <h1 class="mb-0">Вопросы и ответы</h1>
+    <button class="btn btn-outline-primary" type="button" data-bs-toggle="collapse" data-bs-target="#instructionsPanel" aria-expanded="false" aria-controls="instructionsPanel">
+        Настройки инструкций
+    </button>
+</div>
+
+<div class="collapse mb-4" id="instructionsPanel">
+    <div class="card shadow-sm border-0">
+        <div class="card-body">
+            <h2 class="h5">Инструкции для AI по SKU</h2>
+            <p class="text-secondary small">Инструкция используется при подготовке ответа для выбранного товара.</p>
+            <div class="row g-4">
+                <div class="col-lg-6">
+                    <h3 class="h6">Сохраненные инструкции</h3>
+                    {% if instructions %}
+                    <div class="d-flex flex-column gap-3">
+                        {% for inst in instructions %}
+                        <div class="border rounded p-3">
+                            <div class="d-flex justify-content-between gap-2 mb-2">
+                                <strong>SKU {{ inst.sku }}</strong>
+                                <span class="text-secondary small">{{ inst.updated }}</span>
+                            </div>
+                            <form method="post" action="/instructions" enctype="multipart/form-data">
+                                <input type="hidden" name="sku" value="{{ inst.sku }}">
+                                <input type="hidden" name="existing_file_name" value="{{ '; '.join(inst.files) if inst.files else '' }}">
+                                <textarea class="form-control form-control-sm mb-2" name="instruction_text" rows="4">{{ inst.text }}</textarea>
+                                {% if inst.files %}
+                                <div class="small text-success mb-2">Файлы: {{ '; '.join(inst.files) }}</div>
+                                {% for file_name in inst.files %}
+                                <button type="submit" name="remove_file_name" value="{{ file_name }}" class="btn btn-link btn-sm p-0 me-2 text-danger">Удалить {{ file_name }}</button>
+                                {% endfor %}
+                                {% endif %}
+                                <input class="form-control form-control-sm mb-2" type="file" name="files" accept=".txt,.md,.csv" multiple>
+                                <button class="btn btn-sm btn-outline-primary" type="submit">Обновить</button>
+                            </form>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <div class="text-secondary">Инструкций пока нет.</div>
+                    {% endif %}
+                </div>
+                <div class="col-lg-6">
+                    <h3 class="h6">Добавить или изменить инструкцию</h3>
+                    <form method="post" action="/instructions" enctype="multipart/form-data">
+                        <div class="mb-2">
+                            <label class="form-label" for="question_instruction_sku">SKU</label>
+                            <select class="form-select" id="question_instruction_sku" name="sku" required>
+                                {% for sku in all_skus %}<option value="{{ sku }}">{{ sku }}</option>{% endfor %}
+                            </select>
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label" for="question_instruction_text">Текст инструкции</label>
+                            <textarea class="form-control" id="question_instruction_text" name="instruction_text" rows="5" placeholder="Например: при неисправности рекомендуй обратиться в чат поддержки."></textarea>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label" for="question_instruction_files">Файлы</label>
+                            <input class="form-control" type="file" id="question_instruction_files" name="files" accept=".txt,.md,.csv" multiple>
+                        </div>
+                        <button class="btn btn-primary" type="submit">Сохранить инструкцию</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 
 <form method="get" action="/logs" class="row g-2 align-items-end mb-4">
     <div class="col-md-3">
@@ -72,6 +138,12 @@
                     <textarea class="form-control form-control-sm" name="answer_text" rows="3">{{ log.answer }}</textarea>
                     <button type="submit" class="btn btn-sm btn-success">Подтвердить и отправить</button>
                 </form>
+                {% if log.pending or log.manual %}
+                <form method="post" action="/logs/retry-ai" class="mt-2">
+                    <input type="hidden" name="question_id" value="{{ log.id }}">
+                    <button type="submit" class="btn btn-sm btn-outline-secondary">Повторить предложение AI</button>
+                </form>
+                {% endif %}
                 {% else %}
                 {{ log.answer or '—' }}
                 {% endif %}

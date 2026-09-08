@@ -1,11 +1,12 @@
 import os
 import bleach
 import markdown
+from datetime import date, datetime
 from fastapi import FastAPI, Request, Form, HTTPException, File, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 import uvicorn
-from main import Database, Config, OzonAPIClient
+from main import AIClient, Database, Config, OzonAPIClient
 from reporting import MonthlyReportAgent, REPORTS_DIR, delete_report, list_reports, previous_month_range, register_report, report_filename
 from analytics_dashboard import DashboardAnalytics, load_snapshot
 from unit_economics import UnitEconomicsInput, calculate_unit_economics, recommendation
@@ -29,6 +30,25 @@ templates.env.cache = {}
 templates.env.cache_size = 0
 
 db = Database()
+
+
+def format_ui_date(value) -> str:
+    if not value:
+        return "—"
+    if isinstance(value, datetime):
+        return value.strftime("%d.%m.%Y")
+    if isinstance(value, date):
+        return value.strftime("%d.%m.%Y")
+
+    raw_value = str(value).strip()
+    try:
+        parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+        return parsed.strftime("%d.%m.%Y")
+    except ValueError:
+        try:
+            return date.fromisoformat(raw_value).strftime("%d.%m.%Y")
+        except ValueError:
+            return raw_value
 
 
 def parse_file_names(raw_value: str) -> list[str]:
@@ -196,6 +216,9 @@ async def reports_page(request: Request):
 async def analytics_page(request: Request):
     snapshot = load_snapshot()
     selected_skus = request.query_params.getlist("sku")
+    snapshot["display_date_from"] = format_ui_date(snapshot.get("date_from"))
+    snapshot["display_date_to"] = format_ui_date(snapshot.get("date_to"))
+    snapshot["display_updated_at"] = format_ui_date(snapshot.get("updated_at"))
     return templates.TemplateResponse(
         request,
         "analytics.html",
@@ -292,6 +315,9 @@ async def refresh_analytics(
 ):
     try:
         snapshot = DashboardAnalytics().refresh(date_from.strip() or None, date_to.strip() or None)
+        snapshot["display_date_from"] = format_ui_date(snapshot.get("date_from"))
+        snapshot["display_date_to"] = format_ui_date(snapshot.get("date_to"))
+        snapshot["display_updated_at"] = format_ui_date(snapshot.get("updated_at"))
         return templates.TemplateResponse(
             request,
             "analytics.html",
@@ -299,10 +325,14 @@ async def refresh_analytics(
         )
     except Exception as exc:
         __import__("logging").getLogger(__name__).exception("Analytics refresh failed")
+        snapshot = load_snapshot()
+        snapshot["display_date_from"] = format_ui_date(snapshot.get("date_from"))
+        snapshot["display_date_to"] = format_ui_date(snapshot.get("date_to"))
+        snapshot["display_updated_at"] = format_ui_date(snapshot.get("updated_at"))
         return templates.TemplateResponse(
             request,
             "analytics.html",
-            {"snapshot": load_snapshot(), "error": str(exc), "selected_skus": selected_skus},
+            {"snapshot": snapshot, "error": str(exc), "selected_skus": selected_skus},
             status_code=502,
         )
 
@@ -449,7 +479,7 @@ async def instructions_page(request: Request):
         "sku": r[0],
         "text": r[1],
         "files": parse_file_names(r[2]),
-        "updated": r[3]
+        "updated": format_ui_date(r[3])
     } for r in rows]
     with db.get_connection() as conn:
         cursor = conn.cursor()
@@ -463,6 +493,71 @@ async def instructions_page(request: Request):
             "all_skus": skus
         }
     )
+
+@app.get("/products", response_class=HTMLResponse)
+async def products_page(request: Request):
+    with db.get_connection() as conn:
+        rows = conn.execute("""
+            SELECT DISTINCT sku FROM (
+                SELECT sku FROM questions
+                UNION ALL SELECT sku FROM sku_economics
+                UNION ALL SELECT sku FROM sku_instructions
+                UNION ALL SELECT sku FROM competitors
+            ) WHERE sku IS NOT NULL AND trim(sku) != ''
+        """).fetchall()
+    known_skus = [row[0] for row in rows]
+    known_skus.extend(
+        str(row.get("sku", "")).strip()
+        for row in load_snapshot().get("rows", [])
+        if row.get("sku")
+    )
+    db.sync_sku_catalog(known_skus)
+    products = db.list_sku_catalog()
+    error = ""
+    catalog_skus = [product["sku"] for product in products]
+    if catalog_skus:
+        ozon = OzonAPIClient(Config.OZON_CLIENT_ID, Config.OZON_API_KEY)
+        product_info = ozon.fetch_product_info(catalog_skus)
+        if product_info is None:
+            error = f"Не удалось получить карточки товаров из Ozon: {ozon.last_error}"
+        else:
+            returned_skus = set()
+            for item in product_info:
+                sku = str(item.get("sku", "")).strip()
+                if not sku:
+                    sku = str(item.get("id", item.get("product_id", ""))).strip()
+                if not sku:
+                    continue
+                returned_skus.add(sku)
+                primary_image = item.get("primary_image")
+                if isinstance(primary_image, list):
+                    primary_image = primary_image[0] if primary_image else ""
+                image_url = str(primary_image or "").strip()
+                if not image_url:
+                    images = item.get("images") or []
+                    image_url = str(images[0]).strip() if isinstance(images, list) and images else ""
+                db.update_sku_product_info(
+                    sku,
+                    str(item.get("name", "")),
+                    str(item.get("offer_id", item.get("offerId", ""))),
+                    image_url,
+                )
+            if "123" in catalog_skus and "123" not in returned_skus:
+                db.delete_sku_catalog("123")
+        products = db.list_sku_catalog()
+    return templates.TemplateResponse(request, "products.html", {"products": products, "error": error})
+
+@app.post("/products")
+async def update_products(
+    request: Request,
+    visible_skus: list[str] = Form(default=[]),
+):
+    products = db.list_sku_catalog()
+    visible = {str(sku).strip() for sku in visible_skus}
+    for product in products:
+        sku = product["sku"]
+        db.update_sku_catalog(sku, sku in visible)
+    return RedirectResponse(url="/products", status_code=303)
 
 
 @app.post("/instructions")
@@ -572,6 +667,15 @@ async def logs_page(request: Request):
         cursor = conn.cursor()
         cursor.execute("SELECT DISTINCT sku FROM questions WHERE sku IS NOT NULL AND sku != '' ORDER BY CAST(sku AS INTEGER), sku")
         available_skus = [r[0] for r in cursor.fetchall()]
+        cursor.execute("SELECT sku, instruction_text, source_file_name, updated_at FROM sku_instructions ORDER BY CAST(sku AS INTEGER), sku")
+        instruction_rows = cursor.fetchall()
+
+    instructions = [{
+        "sku": r[0],
+        "text": r[1],
+        "files": parse_file_names(r[2]),
+        "updated": format_ui_date(r[3]),
+    } for r in instruction_rows]
 
     logs = []
     for r in rows:
@@ -591,9 +695,10 @@ async def logs_page(request: Request):
             "sku": sku,
             "question": question,
             "answer": answer or "",
-            "date": published_at or created_at,
+            "date": format_ui_date(published_at or created_at),
             "status": status,
             "pending": bool(pending_ai_review),
+            "manual": bool(need_manual_review),
             "is_ai_generated": bool(is_ai_generated),
             "publication_status": publication_status or "",
         })
@@ -603,6 +708,7 @@ async def logs_page(request: Request):
         {
             "logs": logs,
             "all_skus": available_skus,
+            "instructions": instructions,
             "filters": {
                 "sku": sku_filter,
                 "status": status_filter,
@@ -684,7 +790,54 @@ async def approve_ai_answer(
             conn.commit()
         return RedirectResponse(url="/logs", status_code=303)
 
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE questions
+            SET is_answered = 0,
+                is_processed = 1,
+                pending_ai_review = CASE WHEN is_ai_generated = 1 THEN 1 ELSE 0 END,
+                need_manual_review = CASE WHEN is_ai_generated = 0 THEN 1 ELSE 0 END
+            WHERE question_id = ?
+        ''', (question_id,))
+        conn.commit()
     raise HTTPException(500, "Не удалось отправить ответ в Ozon")
+
+
+@app.post("/logs/retry-ai")
+async def retry_ai_answer(question_id: str = Form(...)):
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT sku, question_text, answer_text, is_answered, pending_ai_review, need_manual_review
+            FROM questions
+            WHERE question_id = ?
+        ''', (question_id,))
+        row = cursor.fetchone()
+    if not row:
+        raise HTTPException(404, "Вопрос не найден")
+    sku, question_text, previous_draft, is_answered, pending_ai_review, need_manual_review = row
+    if is_answered:
+        raise HTTPException(400, "Вопрос уже получил ответ")
+    if not pending_ai_review and not need_manual_review:
+        raise HTTPException(400, "Для этого вопроса пока нет черновика для повторной генерации")
+
+    context_reviews, context_answers = db.get_context_for_sku(sku)
+    instruction = db.get_instruction(sku)
+    ai_answer = AIClient(Config.OPENROUTER_API_KEY).generate_answer(
+        question_text=question_text,
+        sku=sku,
+        context_reviews=context_reviews,
+        context_answers=context_answers,
+        instruction=instruction,
+        previous_draft=previous_draft or None,
+    )
+    if not ai_answer:
+        raise HTTPException(502, "AI не смогла подготовить черновик. Проверьте ключ OpenRouter и повторите попытку.")
+
+    db.log_ai_test(question_id, sku, question_text, ai_answer, context_reviews, context_answers)
+    db.mark_question_pending_ai_review(question_id, ai_answer)
+    return RedirectResponse(url="/logs", status_code=303)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

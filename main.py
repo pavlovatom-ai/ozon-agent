@@ -49,7 +49,8 @@ class Config:
     
     POLL_INTERVAL = 60
     QUESTIONS_LIMIT = 100
-    AI_MODEL = "minimax/minimax-m3:free"
+    AI_MODEL = os.getenv("AI_MODEL", "minimax/minimax-m3").strip()
+    AI_MAX_WORDS = int(os.getenv("AI_MAX_WORDS", "45"))
     PROCESSING_MODE = os.getenv("PROCESSING_MODE", "semi_automatic").strip().lower()
     TEST_MODE = PROCESSING_MODE == "test"
 
@@ -196,6 +197,25 @@ class Database:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS sku_catalog (
+                    sku TEXT PRIMARY KEY,
+                    short_name TEXT DEFAULT '',
+                    ozon_name TEXT DEFAULT '',
+                    seller_article TEXT DEFAULT '',
+                    image_url TEXT DEFAULT '',
+                    is_visible BOOLEAN DEFAULT 1,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute("PRAGMA table_info(sku_catalog)")
+            catalog_columns = [col[1] for col in cursor.fetchall()]
+            if "ozon_name" not in catalog_columns:
+                cursor.execute("ALTER TABLE sku_catalog ADD COLUMN ozon_name TEXT DEFAULT ''")
+            if "seller_article" not in catalog_columns:
+                cursor.execute("ALTER TABLE sku_catalog ADD COLUMN seller_article TEXT DEFAULT ''")
+            if "image_url" not in catalog_columns:
+                cursor.execute("ALTER TABLE sku_catalog ADD COLUMN image_url TEXT DEFAULT ''")
 
             # Отзывы пропускаем
             conn.commit()
@@ -253,6 +273,49 @@ class Database:
             cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
             conn.commit()
 
+    def sync_sku_catalog(self, skus: List[str]):
+        clean_skus = sorted({str(sku).strip() for sku in skus if str(sku).strip()})
+        if not clean_skus:
+            return
+        with self.get_connection() as conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO sku_catalog (sku, short_name, is_visible) VALUES (?, '', 1)",
+                [(sku,) for sku in clean_skus],
+            )
+            conn.commit()
+
+    def list_sku_catalog(self) -> List[Dict]:
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT sku, ozon_name, seller_article, image_url, is_visible FROM sku_catalog ORDER BY CAST(sku AS INTEGER), sku"
+            ).fetchall()
+        return [dict(zip(("sku", "ozon_name", "seller_article", "image_url", "is_visible"), row)) for row in rows]
+
+    def update_sku_catalog(self, sku: str, is_visible: bool):
+        with self.get_connection() as conn:
+            conn.execute('''
+                INSERT INTO sku_catalog (sku, is_visible, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(sku) DO UPDATE SET
+                    is_visible = excluded.is_visible,
+                    updated_at = CURRENT_TIMESTAMP
+            ''', (str(sku).strip(), 1 if is_visible else 0))
+            conn.commit()
+
+    def update_sku_product_info(self, sku: str, ozon_name: str, seller_article: str, image_url: str = ""):
+        with self.get_connection() as conn:
+            conn.execute('''
+                UPDATE sku_catalog
+                SET ozon_name = ?, seller_article = ?, image_url = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE sku = ?
+            ''', (ozon_name.strip(), seller_article.strip(), image_url.strip(), str(sku).strip()))
+            conn.commit()
+
+    def delete_sku_catalog(self, sku: str):
+        with self.get_connection() as conn:
+            conn.execute("DELETE FROM sku_catalog WHERE sku = ?", (str(sku).strip(),))
+            conn.commit()
+
     def get_sku_economics(self, sku: str) -> Dict[str, float]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -304,19 +367,25 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             for question in questions_data.get('questions', []):
+                sku = str(question.get('sku', '')).strip()
                 cursor.execute('''
                     INSERT OR IGNORE INTO questions 
                     (question_id, sku, question_text, status, published_at, author_name, answers_count)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     question.get('id'),
-                    str(question.get('sku', '')),
+                    sku,
                     question.get('text', ''),
                     question.get('status', ''),
                     question.get('published_at'),
                     question.get('author_name', ''),
                     question.get('answers_count', 0)
                 ))
+                if sku:
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO sku_catalog (sku, is_visible) VALUES (?, 1)",
+                        (sku,),
+                    )
             conn.commit()
             logger.info(f"Сохранено {len(questions_data.get('questions', []))} новых вопросов")
     
@@ -327,9 +396,12 @@ class Database:
             cursor = conn.cursor()
             for answer in answers:
                 cursor.execute('''
-                    INSERT OR IGNORE INTO question_answers 
+                    INSERT INTO question_answers
                     (answer_id, question_id, sku, answer_text, author_name, published_at, status_publication)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(answer_id) DO UPDATE SET
+                        status_publication = excluded.status_publication,
+                        published_at = excluded.published_at
                 ''', (
                     answer.get('id'),
                     question_id,
@@ -337,7 +409,7 @@ class Database:
                     answer.get('text'),
                     answer.get('author_name'),
                     answer.get('published_at'),
-                    answer.get('status_publication')
+                    answer.get('status_publication') or answer.get('status', '')
                 ))
             # Обновляем статус вопроса: помечаем как отвеченный
             cursor.execute('''
@@ -348,6 +420,16 @@ class Database:
             ''', (question_id, question_id))
             conn.commit()
             logger.info(f"Сохранено {len(answers)} ответов для вопроса {question_id}")
+
+    def get_questions_with_unfinalized_publication(self) -> List[Tuple[str, str]]:
+        with self.get_connection() as conn:
+            return conn.execute('''
+                SELECT DISTINCT q.question_id, q.sku
+                FROM questions q
+                JOIN question_answers a ON a.question_id = q.question_id
+                WHERE a.status_publication IN ('MODERATION', 'NOT_PUBLISHED', '')
+                  AND q.sku IS NOT NULL AND q.sku != ''
+            ''').fetchall()
     
     def get_unprocessed_questions(self, limit: int = 1) -> List[Tuple]:
         with self.get_connection() as conn:
@@ -563,6 +645,20 @@ class OzonAPIClient:
             time.sleep(0.02)  # ~50 запросов/сек
         return all_answers
 
+    def fetch_product_info(self, skus: List[str]) -> Optional[List[Dict]]:
+        sku_values = []
+        for sku in skus:
+            value = str(sku).strip()
+            if value:
+                sku_values.append(value)
+        if not sku_values:
+            return []
+        response = self._make_request("/v3/product/info/list", {"sku": sku_values[:1000]})
+        if not response:
+            return None
+        products = response.get("items", [])
+        return products if isinstance(products, list) else []
+
     def fetch_seller_info(self) -> Dict:
         response = self._make_request("/v1/seller/info", {})
         if not response:
@@ -611,19 +707,31 @@ class AIClient:
 
     def generate_answer(self, question_text: str, sku: str, 
                        context_reviews: str, context_answers: str,
-                       instruction: Optional[str] = None) -> Optional[str]:
-        # Базовый системный промт (ОБНОВЛЁН)
-        system_prompt = """
-        Ты - профессиональный менеджер маркетплейса Ozon. Отвечай на вопросы покупателей.
+                       instruction: Optional[str] = None,
+                       previous_draft: Optional[str] = None) -> Optional[str]:
+        system_prompt = f"""
+        {self.system_prompt}
 
-        ОБЩИЕ ПРАВИЛА:
-        1. Отвечай четко по делу.
-        2. Используй информацию из контекста (отзывы и предыдущие ответы).
-        3. Будь вежливым и доброжелательным.
-        4. Если у тебя нет точной информации в контексте - честно напиши "НЕ УВЕРЕН".
-        5. Отвечай на русском языке.
-        6. НЕ ОТВЕЧАЙ дословно готовыми фразами. Всегда переформулируй содержание своими словами, но ОБЯЗАТЕЛЬНО сохраняй все факты, цифры, сроки и смысл.
-        7. Отвечай естественно, как живой человек, но не придумывай факты, которых нет в контексте или инструкции.
+        ПОРЯДОК ПОДГОТОВКИ ОТВЕТА:
+          1. Сначала определи, описывает ли вопрос неисправность, ошибку или неработающую функцию товара.
+          2. Для вопроса о неисправности не предлагай ремонт, диагностику или неподтвержденные действия.
+              Руководствуйся инструкцией SKU и рекомендуй обратиться в чат поддержки.
+          3. Если вопрос не о неисправности, проверь предыдущие подтвержденные ответы для этого товара и используй их факты.
+          4. Если подходящего ответа в истории нет, используй специальную инструкцию для SKU.
+          5. Если точного ответа нет ни в истории, ни в инструкции, предложи наиболее полезный и осторожный вариант ответа на согласование менеджеру.
+
+        Не возвращай пустой ответ и не отвечай только словами «НЕ УВЕРЕН».
+        Не придумывай характеристики, цены, сроки и гарантии. Если данных недостаточно,
+        сформулируй нейтральный ответ без неподтвержденных обещаний, который менеджер сможет проверить.
+        Отвечай на русском языке, кратко и доброжелательно, максимум в {Config.AI_MAX_WORDS} слов.
+        """
+        if previous_draft:
+            system_prompt += f"""
+
+        ПРЕДЫДУЩИЙ ЧЕРНОВИК:
+        {previous_draft}
+        Этот вариант уже не подошел менеджеру. Предложи другой ответ: измени формулировку
+        и подход, но сохрани подтвержденные факты и не добавляй выдуманных данных.
         """
 
         # Если есть инструкция для этого SKU – добавляем её с приоритетом
@@ -640,12 +748,15 @@ class AIClient:
 
         user_prompt = f"""
         Товар (SKU): {sku}
-        Отзывы покупателей:
-        {context_reviews}
-        Предыдущие ответы:
+        Предыдущие подтвержденные ответы:
         {context_answers}
+        Инструкция для SKU:
+        {instruction or 'Инструкция отсутствует.'}
+        Если вопрос о неисправности товара, обязательно используй сценарий обращения в чат поддержки из инструкции.
+        Предыдущий черновик (не повторяй его дословно):
+        {previous_draft or 'Нет, это первая попытка.'}
         Вопрос: {question_text}
-        Твой ответ (или только слово "НЕ УВЕРЕН", если не знаешь):
+        Подготовь черновик ответа для проверки менеджером:
         """
         try:
             logger.info(f"🤖 Sending to AI: {self.model}")
@@ -658,16 +769,26 @@ class AIClient:
                 temperature=0.3,
                 max_tokens=500
             )
-            ai_answer = completion.choices[0].message.content.strip()
+            ai_answer = (completion.choices[0].message.content or "").strip()
+            if not ai_answer:
+                logger.warning("AI returned an empty answer")
+                return None
+            words = ai_answer.split()
+            if len(words) > Config.AI_MAX_WORDS:
+                shortened = " ".join(words[:Config.AI_MAX_WORDS]).rstrip(" ,;:")
+                sentence_end = max(shortened.rfind("."), shortened.rfind("!"), shortened.rfind("?"))
+                if sentence_end >= len(shortened) // 2:
+                    shortened = shortened[:sentence_end + 1]
+                else:
+                    shortened += "..."
+                logger.info(f"AI answer shortened from {len(words)} to {len(shortened.split())} words")
+                ai_answer = shortened
             logger.info(f"✅ AI response: {ai_answer[:100]}...")
 
             unsure_phrases = ["не уверен", "не знаю", "нет информации", "к сожалению", 
                              "у меня нет", "не могу ответить", "не имею данных"]
             if any(phrase in ai_answer.lower() for phrase in unsure_phrases):
-                logger.info("AI не уверен в ответе (обнаружена фраза неуверенности)")
-                return None
-            if ai_answer.strip().upper() == "НЕ УВЕРЕН":
-                return None
+                logger.warning("AI answer contains an uncertainty phrase; keeping it as a draft for review")
             return ai_answer
         except Exception as e:
             logger.error(f"❌ AI Error: {e}")
@@ -688,6 +809,7 @@ class OzonAIHelper:
     
     def sync_all_data(self):
         logger.info("📥 Syncing data from Ozon (incremental)...")
+        self.refresh_publication_statuses()
         
         # Определяем дату последней синхронизации (самый свежий вопрос в БД)
         last_sync = self.db.get_last_sync_time()
@@ -731,6 +853,17 @@ class OzonAIHelper:
             logger.info("✅ No new answers to fetch")
         
         logger.info("✅ Sync complete")
+
+    def refresh_publication_statuses(self):
+        pending_answers = self.db.get_questions_with_unfinalized_publication()
+        if not pending_answers:
+            return
+        logger.info(f"🔄 Refreshing publication status for {len(pending_answers)} questions...")
+        for question_id, sku in pending_answers:
+            answers = self.ozon.fetch_question_answers(question_id, sku)
+            if answers:
+                self.db.save_question_answers(question_id, answers)
+            time.sleep(0.02)
     
     def process_one_question(self):
         questions = self.db.get_unprocessed_questions(limit=1)

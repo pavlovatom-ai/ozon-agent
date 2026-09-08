@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-end gap-3 mb-4">
+    <div>
+        <h1 class="mb-1">Товары</h1>
+        <div class="text-secondary">Карточки товаров Ozon и настройки отображения в рабочих таблицах.</div>
+    </div>
+    <span class="badge bg-light text-dark border">{{ products|length }} SKU</span>
+</div>
+
+{% if error %}<div class="alert alert-warning" role="alert">{{ error }}</div>{% endif %}
+
+<form method="post" action="/products">
+    <div class="card shadow-sm border-0">
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Фото</th>
+                            <th>SKU</th>
+                            <th>Артикул продавца</th>
+                            <th>Название Ozon</th>
+                            <th class="text-center">Отображать</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {% for product in products %}
+                    <tr>
+                        <td>
+                            {% if product.image_url %}
+                            <img src="{{ product.image_url }}" alt="{{ product.ozon_name or ('SKU ' ~ product.sku) }}" class="product-thumb" loading="lazy">
+                            {% else %}
+                            <span class="product-thumb product-thumb-empty" aria-label="Фото отсутствует">—</span>
+                            {% endif %}
+                        </td>
+                        <td class="fw-semibold text-nowrap">{{ product.sku }}</td>
+                        <td>{{ product.seller_article or '—' }}</td>
+                        <td>{{ product.ozon_name or 'Не получено из Ozon' }}</td>
+                        <td class="text-center">
+                            <label class="form-check d-inline-flex align-items-center gap-2 mb-0">
+                                <input class="form-check-input m-0 visibility-toggle" type="checkbox" name="visible_skus" value="{{ product.sku }}" {% if product.is_visible %}checked{% endif %}>
+                                <span class="visibility-label">{{ 'Да' if product.is_visible else 'Нет' }}</span>
+                            </label>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="5" class="text-center text-secondary py-5">SKU появятся после синхронизации с Ozon.</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% if products %}
+        <div class="card-footer bg-transparent d-flex justify-content-between align-items-center gap-3">
+            <span class="text-secondary small">Новые SKU добавляются автоматически после синхронизации.</span>
+            <button class="btn btn-primary" type="submit">Сохранить отображение</button>
+        </div>
+        {% endif %}
+    </div>
+</form>
+<style>
+.product-thumb { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; border: 1px solid #d9e1e8; display: inline-grid; place-items: center; background: #f5f7f9; }
+.product-thumb-empty { color: #8a98a6; font-size: 1.25rem; }
+</style>
+<script>
+(function () {
+    document.querySelectorAll('.visibility-toggle').forEach(function (checkbox) {
+        checkbox.addEventListener('change', function () {
+            checkbox.closest('label').querySelector('.visibility-label').textContent = checkbox.checked ? 'Да' : 'Нет';
+        });
+    });
+}());
+</script>
+{% endblock %}

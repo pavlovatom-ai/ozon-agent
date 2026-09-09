@@ -129,6 +129,82 @@ def format_rating_value(rating: dict) -> str:
     return "—"
 
 
+def build_inventory_rows(products: list[dict], stock_payload: dict | None) -> list[dict]:
+    if not stock_payload:
+        return []
+    data = stock_payload.get("data", stock_payload)
+    items = data.get("items", []) if isinstance(data, dict) else []
+    product_map = {product["sku"]: product for product in products}
+    grouped = {}
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        sku = str(item.get("sku", item.get("product_id", ""))).strip()
+        product = product_map.get(sku)
+        if not product:
+            continue
+        grouped.setdefault(sku, {"product": product, "total": 0, "reserved": 0, "warehouses": []})
+        stock_items = item.get("stocks", item.get("warehouse_stocks", []))
+        if isinstance(stock_items, dict):
+            stock_items = stock_items.get("items", stock_items.get("stocks", []))
+        if not stock_items and any(key in item for key in ("available_stock_count", "present", "available", "stock")):
+            quantity = item.get("present", item.get("available_stock_count", item.get("available", item.get("stock", 0)))) or 0
+            reserved = item.get("reserved", item.get("reserved_stock_count", 0)) or 0
+            try:
+                grouped[sku]["total"] += int(float(quantity))
+            except (TypeError, ValueError):
+                pass
+            try:
+                grouped[sku]["reserved"] += int(float(reserved))
+            except (TypeError, ValueError):
+                pass
+            stock_items = []
+        warehouses = []
+        for stock in stock_items if isinstance(stock_items, list) else []:
+            if not isinstance(stock, dict):
+                continue
+            quantity = stock.get("present", stock.get("available_stock_count", stock.get("available", stock.get("stock", 0))))
+            try:
+                quantity = int(float(quantity or 0))
+            except (TypeError, ValueError):
+                quantity = 0
+            reserved = stock.get("reserved", stock.get("reserved_stock_count", 0))
+            try:
+                reserved = int(float(reserved or 0))
+            except (TypeError, ValueError):
+                reserved = 0
+            warehouses.append({
+                "name": stock.get("warehouse_name", stock.get("name", stock.get("warehouse_id", stock.get("source", "")))),
+                "cluster": stock.get("cluster_name", stock.get("cluster", stock.get("cluster_id", ""))),
+                "quantity": quantity,
+                "reserved": reserved,
+            })
+        grouped[sku]["warehouses"].extend(warehouses)
+
+    rows = []
+    for group in grouped.values():
+        cluster_map = {}
+        for warehouse in group["warehouses"]:
+            group["total"] += warehouse["quantity"]
+            cluster_name = str(warehouse["cluster"]).strip() or "Кластер не указан"
+            warehouse["name"] = str(warehouse["name"]).strip() or "Склад не указан"
+            cluster_map.setdefault(cluster_name, []).append(warehouse)
+        if not group["warehouses"]:
+            cluster_map["Итого по товару"] = []
+        group["clusters"] = [
+            {
+                "name": cluster_name,
+                "warehouses": cluster_warehouses,
+                "total": group["total"] if not cluster_warehouses else sum(warehouse["quantity"] for warehouse in cluster_warehouses),
+                "reserved": group["reserved"] if not cluster_warehouses else sum(warehouse["reserved"] for warehouse in cluster_warehouses),
+            }
+            for cluster_name, cluster_warehouses in cluster_map.items()
+        ]
+        group.pop("warehouses", None)
+        rows.append(group)
+    return rows
+
+
 def normalize_ratings(raw_ratings):
     if not isinstance(raw_ratings, list):
         return []
@@ -183,6 +259,22 @@ async def index(request: Request):
     ratings = seller_info.get("ratings", []) if isinstance(seller_info, dict) and "ratings" in seller_info else []
     ratings = normalize_ratings(ratings)
     seller_error = seller_info.get("error") if isinstance(seller_info, dict) and "error" in seller_info else ""
+    visible_products = [product for product in db.list_sku_catalog() if product["is_visible"]]
+    inventory_error = ""
+    inventory_rows = []
+    if visible_products:
+        stock_payload = ozon.fetch_stock_info([product["sku"] for product in visible_products])
+        if stock_payload is None:
+            stock_error = ozon.last_error
+            product_info = ozon.fetch_product_info([product["sku"] for product in visible_products])
+            if product_info is not None:
+                inventory_rows = build_inventory_rows(visible_products, {"items": product_info})
+                if not inventory_rows:
+                    inventory_error = "Ozon не вернул складские остатки для отмеченных товаров."
+            else:
+                inventory_error = f"Не удалось получить остатки Ozon: {stock_error}"
+        else:
+            inventory_rows = build_inventory_rows(visible_products, stock_payload)
 
     return templates.TemplateResponse(
         request,
@@ -197,6 +289,8 @@ async def index(request: Request):
             "subscription": subscription,
             "ratings": ratings,
             "seller_error": seller_error,
+            "inventory_rows": inventory_rows,
+            "inventory_error": inventory_error,
             "reports": list_reports()[:5],
         }
     )
@@ -496,6 +590,7 @@ async def instructions_page(request: Request):
 
 @app.get("/products", response_class=HTMLResponse)
 async def products_page(request: Request):
+    selected_category = request.query_params.get("category", "").strip()
     with db.get_connection() as conn:
         rows = conn.execute("""
             SELECT DISTINCT sku FROM (
@@ -511,17 +606,27 @@ async def products_page(request: Request):
         for row in load_snapshot().get("rows", [])
         if row.get("sku")
     )
+    error = ""
+    ozon = OzonAPIClient(Config.OZON_CLIENT_ID, Config.OZON_API_KEY)
+    category_names = {}
+    ozon_catalog = ozon.fetch_product_list_paginated()
+    if ozon_catalog is None:
+        error = f"Не удалось получить список товаров из Ozon: {ozon.last_error}"
+    else:
+        for item in ozon_catalog:
+            sku = item.get("sku")
+            if sku not in (None, ""):
+                known_skus.append(str(sku).strip())
     db.sync_sku_catalog(known_skus)
     products = db.list_sku_catalog()
-    error = ""
     catalog_skus = [product["sku"] for product in products]
     if catalog_skus:
-        ozon = OzonAPIClient(Config.OZON_CLIENT_ID, Config.OZON_API_KEY)
         product_info = ozon.fetch_product_info(catalog_skus)
         if product_info is None:
             error = f"Не удалось получить карточки товаров из Ozon: {ozon.last_error}"
         else:
             returned_skus = set()
+            existing_category_names = {product["sku"]: product["category_name"] for product in products}
             for item in product_info:
                 sku = str(item.get("sku", "")).strip()
                 if not sku:
@@ -541,22 +646,53 @@ async def products_page(request: Request):
                     str(item.get("name", "")),
                     str(item.get("offer_id", item.get("offerId", ""))),
                     image_url,
+                    str(item.get("description_category_id", "")),
+                    existing_category_names.get(sku, ""),
                 )
             if "123" in catalog_skus and "123" not in returned_skus:
                 db.delete_sku_catalog("123")
         products = db.list_sku_catalog()
-    return templates.TemplateResponse(request, "products.html", {"products": products, "error": error})
+    category_ids = {product["category_id"] for product in products if product["category_id"]}
+    if category_ids:
+        category_names = ozon.fetch_category_tree() or {}
+        if category_names:
+            for product in products:
+                category_id = product["category_id"]
+                if category_id in category_names:
+                    db.update_sku_product_info(
+                        product["sku"],
+                        product["ozon_name"],
+                        product["seller_article"],
+                        product["image_url"],
+                        category_id,
+                        category_names[category_id],
+                    )
+            products = db.list_sku_catalog()
+    categories = sorted({
+        (product["category_id"], product["category_name"] or f"Категория {product['category_id']}")
+        for product in products if product["category_id"]
+    }, key=lambda value: value[1])
+    if selected_category:
+        products = [product for product in products if product["category_id"] == selected_category]
+    return templates.TemplateResponse(request, "products.html", {
+        "products": products,
+        "categories": categories,
+        "selected_category": selected_category,
+        "error": error,
+    })
 
 @app.post("/products")
 async def update_products(
     request: Request,
     visible_skus: list[str] = Form(default=[]),
+    category: str = Form(""),
 ):
     products = db.list_sku_catalog()
     visible = {str(sku).strip() for sku in visible_skus}
     for product in products:
         sku = product["sku"]
-        db.update_sku_catalog(sku, sku in visible)
+        if not category or product["category_id"] == category:
+            db.update_sku_catalog(sku, sku in visible)
     return RedirectResponse(url="/products", status_code=303)
 
 

@@ -10,7 +10,23 @@
 
 {% if error %}<div class="alert alert-warning" role="alert">{{ error }}</div>{% endif %}
 
+<form method="get" action="/products" class="row g-2 align-items-end mb-3">
+    <div class="col-md-5 col-lg-4">
+        <label class="form-label" for="category">Категория</label>
+        <select class="form-select" id="category" name="category" onchange="this.form.submit()">
+            <option value="" {% if not selected_category %}selected{% endif %}>Все категории</option>
+            {% for category_id, category_name in categories %}
+            <option value="{{ category_id }}" {% if selected_category == category_id %}selected{% endif %}>{{ category_name }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="col-auto">
+        <a class="btn btn-outline-secondary" href="/products">Сбросить</a>
+    </div>
+</form>
+
 <form method="post" action="/products">
+    <input type="hidden" name="category" value="{{ selected_category }}">
     <div class="card shadow-sm border-0">
         <div class="card-body p-0">
             <div class="table-responsive">
@@ -54,7 +70,7 @@
         {% if products %}
         <div class="card-footer bg-transparent d-flex justify-content-between align-items-center gap-3">
             <span class="text-secondary small">Новые SKU добавляются автоматически после синхронизации.</span>
-            <button class="btn btn-primary" type="submit">Сохранить отображение</button>
+            <span class="small text-secondary" id="visibility-save-status" aria-live="polite"></span>
         </div>
         {% endif %}
     </div>
@@ -65,9 +81,35 @@
 </style>
 <script>
 (function () {
+    const form = document.querySelector('form[action="/products"]');
+    const status = document.getElementById('visibility-save-status');
+    let saveRequest;
+
+    function saveVisibility() {
+        if (!form) return;
+        status.textContent = 'Сохранение...';
+        status.className = 'small text-secondary';
+        if (saveRequest) saveRequest.abort();
+        saveRequest = new AbortController();
+        fetch(form.action, {
+            method: 'POST',
+            body: new FormData(form),
+            signal: saveRequest.signal,
+        }).then(function (response) {
+            if (!response.ok) throw new Error('save failed');
+            status.textContent = 'Сохранено';
+            status.className = 'small text-success';
+        }).catch(function (error) {
+            if (error.name === 'AbortError') return;
+            status.textContent = 'Не удалось сохранить';
+            status.className = 'small text-danger';
+        });
+    }
+
     document.querySelectorAll('.visibility-toggle').forEach(function (checkbox) {
         checkbox.addEventListener('change', function () {
             checkbox.closest('label').querySelector('.visibility-label').textContent = checkbox.checked ? 'Да' : 'Нет';
+            saveVisibility();
         });
     });
 }());

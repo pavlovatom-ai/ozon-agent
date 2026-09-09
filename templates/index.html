@@ -67,51 +67,91 @@
     </div>
 </div>
 
-<div class="card shadow-sm border-0 mb-4">
-    <div class="card-body">
-        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-            <h2 class="h4 mb-0">Последние отчёты</h2>
-            <a class="btn btn-sm btn-outline-primary" href="/reports">Все отчёты</a>
-        </div>
-        {% if reports %}
-        <div class="list-group list-group-flush">
-            {% for report in reports %}
-            <a href="/reports/{{ report.filename }}" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center gap-3 px-0">
-                <span>{{ report.title }} <small class="text-secondary">{{ report.source }} · {{ report.date }}</small></span>
-            </a>
-            {% endfor %}
-        </div>
-        {% else %}
-        <div class="text-secondary">Отчётов пока нет.</div>
-        {% endif %}
+<section class="mb-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+        <h2 class="h4 mb-0">Наличие товара на складе Ozon</h2>
+        <span class="text-secondary small">Показываются товары с отметкой «Да»</span>
     </div>
-</div>
+    {% if inventory_error %}
+    <div class="alert alert-warning">{{ inventory_error }}</div>
+    {% elif inventory_rows %}
+    <div class="card shadow-sm border-0">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Фото</th>
+                        <th>SKU</th>
+                        <th>Артикул продавца</th>
+                        <th>Название Ozon</th>
+                        <th class="text-end">Всего на складах, шт.</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for row in inventory_rows %}
+                <tr class="inventory-summary-row" data-inventory-toggle="inventory-details-{{ loop.index }}">
+                    <td>
+                        {% if row.product.image_url %}
+                        <img src="{{ row.product.image_url }}" alt="{{ row.product.ozon_name or ('SKU ' ~ row.product.sku) }}" class="inventory-thumb" loading="lazy">
+                        {% else %}<span class="inventory-thumb inventory-thumb-empty">—</span>{% endif %}
+                    </td>
+                    <td class="fw-semibold text-nowrap">{{ row.product.sku }}</td>
+                    <td>{{ row.product.seller_article or '—' }}</td>
+                    <td>{{ row.product.ozon_name or '—' }}</td>
+                    <td class="text-end fw-semibold">{{ row.total }}</td>
+                </tr>
+                <tr id="inventory-details-{{ loop.index }}" class="inventory-details-row" hidden>
+                    <td colspan="5">
+                        {% if row.clusters %}
+                        <div class="inventory-clusters">
+                            <table class="table table-sm mb-0 inventory-details-table">
+                                <thead><tr><th>Кластер</th><th class="text-end">Доступно, шт.</th><th class="text-end">Резерв, шт.</th></tr></thead>
+                                <tbody>
+                                {% for cluster in row.clusters %}
+                                    <tr class="inventory-cluster-row"><th>{{ cluster.name }}</th><th class="text-end">{{ cluster.total }}</th><th class="text-end">{{ cluster.reserved }}</th></tr>
+                                    {% for warehouse in cluster.warehouses %}
+                                    <tr><td class="inventory-warehouse-name">{{ warehouse.name }}</td><td class="text-end">{{ warehouse.quantity }}</td><td class="text-end">{{ warehouse.reserved }}</td></tr>
+                                    {% endfor %}
+                                {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        {% else %}
+                        <span class="text-secondary small">Ozon не передал детализацию по кластерам и складам.</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% else %}
+    <div class="text-secondary">Нет товаров, отмеченных для отображения, или Ozon не вернул остатки.</div>
+    {% endif %}
+</section>
+<style>
+.inventory-thumb { width: 48px; height: 48px; object-fit: cover; border-radius: 7px; border: 1px solid #d9e1e8; display: inline-grid; place-items: center; background: #f5f7f9; }
+.inventory-thumb-empty { color: #8a98a6; font-size: 1.15rem; }
+.inventory-summary-row { cursor: pointer; }
+.inventory-summary-row:hover { background-color: rgba(13, 110, 253, .06); }
+.inventory-details-row > td { background: #f8fafc; padding: 1rem 1.25rem; }
+.inventory-clusters { display: grid; gap: .75rem; }
+.inventory-details-table { background: #fff; }
+.inventory-cluster-row { background: #dbeaf8; }
+.inventory-warehouse-name { padding-left: 1.5rem !important; }
+</style>
+<script>
+(function () {
+    document.querySelectorAll('[data-inventory-toggle]').forEach(function (row) {
+        row.addEventListener('click', function () {
+            const details = document.getElementById(row.dataset.inventoryToggle);
+            if (!details) return;
+            details.hidden = !details.hidden;
+            row.classList.toggle('inventory-row-open', !details.hidden);
+        });
+    });
+}());
+</script>
 
-<h2 class="mb-3">Статистика</h2>
-<div class="row">
-    <div class="col-md-3">
-        <div class="card text-white bg-primary mb-3">
-            <div class="card-header">Всего вопросов</div>
-            <div class="card-body"><h5 class="card-title">{{ total_questions }}</h5></div>
-        </div>
-    </div>
-    <div class="col-md-3">
-        <div class="card text-white bg-success mb-3">
-            <div class="card-header">Отвечено</div>
-            <div class="card-body"><h5 class="card-title">{{ answered }}</h5></div>
-        </div>
-    </div>
-    <div class="col-md-3">
-        <div class="card text-white bg-warning mb-3">
-            <div class="card-header">Требуют ответа</div>
-            <div class="card-body"><h5 class="card-title">{{ manual }}</h5></div>
-        </div>
-    </div>
-    <div class="col-md-3">
-        <div class="card text-white bg-info mb-3">
-            <div class="card-header">Логов ИИ</div>
-            <div class="card-body"><h5 class="card-title">{{ logs }}</h5></div>
-        </div>
-    </div>
-</div>
 {% endblock %}

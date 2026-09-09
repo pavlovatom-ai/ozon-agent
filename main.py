@@ -204,7 +204,9 @@ class Database:
                     ozon_name TEXT DEFAULT '',
                     seller_article TEXT DEFAULT '',
                     image_url TEXT DEFAULT '',
-                    is_visible BOOLEAN DEFAULT 1,
+                    category_id TEXT DEFAULT '',
+                    category_name TEXT DEFAULT '',
+                    is_visible BOOLEAN DEFAULT 0,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -216,6 +218,10 @@ class Database:
                 cursor.execute("ALTER TABLE sku_catalog ADD COLUMN seller_article TEXT DEFAULT ''")
             if "image_url" not in catalog_columns:
                 cursor.execute("ALTER TABLE sku_catalog ADD COLUMN image_url TEXT DEFAULT ''")
+            if "category_id" not in catalog_columns:
+                cursor.execute("ALTER TABLE sku_catalog ADD COLUMN category_id TEXT DEFAULT ''")
+            if "category_name" not in catalog_columns:
+                cursor.execute("ALTER TABLE sku_catalog ADD COLUMN category_name TEXT DEFAULT ''")
 
             # Отзывы пропускаем
             conn.commit()
@@ -279,7 +285,7 @@ class Database:
             return
         with self.get_connection() as conn:
             conn.executemany(
-                "INSERT OR IGNORE INTO sku_catalog (sku, short_name, is_visible) VALUES (?, '', 1)",
+                "INSERT OR IGNORE INTO sku_catalog (sku, short_name, is_visible) VALUES (?, '', 0)",
                 [(sku,) for sku in clean_skus],
             )
             conn.commit()
@@ -287,9 +293,9 @@ class Database:
     def list_sku_catalog(self) -> List[Dict]:
         with self.get_connection() as conn:
             rows = conn.execute(
-                "SELECT sku, ozon_name, seller_article, image_url, is_visible FROM sku_catalog ORDER BY CAST(sku AS INTEGER), sku"
+                "SELECT sku, ozon_name, seller_article, image_url, category_id, category_name, is_visible FROM sku_catalog ORDER BY CAST(sku AS INTEGER), sku"
             ).fetchall()
-        return [dict(zip(("sku", "ozon_name", "seller_article", "image_url", "is_visible"), row)) for row in rows]
+        return [dict(zip(("sku", "ozon_name", "seller_article", "image_url", "category_id", "category_name", "is_visible"), row)) for row in rows]
 
     def update_sku_catalog(self, sku: str, is_visible: bool):
         with self.get_connection() as conn:
@@ -302,13 +308,13 @@ class Database:
             ''', (str(sku).strip(), 1 if is_visible else 0))
             conn.commit()
 
-    def update_sku_product_info(self, sku: str, ozon_name: str, seller_article: str, image_url: str = ""):
+    def update_sku_product_info(self, sku: str, ozon_name: str, seller_article: str, image_url: str = "", category_id: str = "", category_name: str = ""):
         with self.get_connection() as conn:
             conn.execute('''
                 UPDATE sku_catalog
-                SET ozon_name = ?, seller_article = ?, image_url = ?, updated_at = CURRENT_TIMESTAMP
+                SET ozon_name = ?, seller_article = ?, image_url = ?, category_id = ?, category_name = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE sku = ?
-            ''', (ozon_name.strip(), seller_article.strip(), image_url.strip(), str(sku).strip()))
+            ''', (ozon_name.strip(), seller_article.strip(), image_url.strip(), category_id.strip(), category_name.strip(), str(sku).strip()))
             conn.commit()
 
     def delete_sku_catalog(self, sku: str):
@@ -383,7 +389,7 @@ class Database:
                 ))
                 if sku:
                     cursor.execute(
-                        "INSERT OR IGNORE INTO sku_catalog (sku, is_visible) VALUES (?, 1)",
+                        "INSERT OR IGNORE INTO sku_catalog (sku, is_visible) VALUES (?, 0)",
                         (sku,),
                     )
             conn.commit()
@@ -624,6 +630,60 @@ class OzonAPIClient:
             logger.info(f"Got {len(questions)} questions, has_next={has_next}")
             time.sleep(0.5)
         return all_questions
+
+    def fetch_product_list_paginated(self, limit: int = 1000) -> Optional[List[Dict]]:
+        """Загружает полный каталог товаров продавца из Ozon."""
+        products = []
+        last_id = ""
+        page = 0
+        while page < 100:
+            page += 1
+            response = self._make_request("/v3/product/list", {
+                "filter": {"visibility": "ALL"},
+                "last_id": last_id,
+                "limit": min(max(limit, 1), 1000),
+            })
+            if response is None:
+                return None
+            result = response.get("result", {})
+            if not isinstance(result, dict):
+                return products
+            items = result.get("items", [])
+            if isinstance(items, list):
+                products.extend(items)
+            next_last_id = result.get("last_id", "")
+            if not next_last_id or next_last_id == last_id:
+                break
+            last_id = next_last_id
+            if len(items) < limit:
+                break
+        return products
+
+    def fetch_category_tree(self) -> Optional[Dict[str, str]]:
+        response = self._make_request("/v1/description-category/tree", {"language": "DEFAULT"})
+        if response is None:
+            return None
+        category_map = {}
+
+        def visit(value):
+            if isinstance(value, list):
+                for item in value:
+                    visit(item)
+                return
+            if not isinstance(value, dict):
+                return
+            category_id = value.get(
+                "description_category_id",
+                value.get("category_id", value.get("id")),
+            )
+            category_name = value.get("category_name", value.get("name", ""))
+            if category_id not in (None, "") and category_name:
+                category_map[str(category_id)] = str(category_name)
+            for key in ("children", "categories", "result", "items"):
+                visit(value.get(key))
+
+        visit(response)
+        return category_map
     
     def fetch_question_answers(self, question_id: str, sku: str) -> List[Dict]:
         all_answers = []
@@ -645,6 +705,35 @@ class OzonAPIClient:
             time.sleep(0.02)  # ~50 запросов/сек
         return all_answers
 
+    def fetch_stock_info(self, skus: List[str]) -> Optional[Dict]:
+        values = [str(sku).strip() for sku in skus if str(sku).strip()]
+        if not values:
+            return {"products": []}
+        products = []
+        cursor = ""
+        while True:
+            response = self._make_request("/v1/product/info/stocks-by-warehouse/fbo", {
+                "cursor": cursor,
+                "limit": 1000,
+                "skus": values[:1000],
+            })
+            if response is None:
+                return None
+            products.extend(response.get("products", []))
+            if not response.get("has_next") or not response.get("cursor") or response.get("cursor") == cursor:
+                break
+            cursor = response["cursor"]
+        return {"products": products}
+
+    def fetch_cluster_list(self) -> Optional[List[Dict]]:
+        response = self._make_request("/v1/cluster/list", {
+            "cluster_type": "CLUSTER_TYPE_OZON",
+        })
+        if response is None:
+            return None
+        clusters = response.get("clusters", [])
+        return clusters if isinstance(clusters, list) else []
+
     def fetch_product_info(self, skus: List[str]) -> Optional[List[Dict]]:
         sku_values = []
         for sku in skus:
@@ -653,11 +742,22 @@ class OzonAPIClient:
                 sku_values.append(value)
         if not sku_values:
             return []
-        response = self._make_request("/v3/product/info/list", {"sku": sku_values[:1000]})
-        if not response:
+        products = []
+        successful_batches = 0
+        for start in range(0, len(sku_values), 1000):
+            response = self._make_request(
+                "/v3/product/info/list",
+                {"sku": sku_values[start:start + 1000]},
+            )
+            if response is None:
+                continue
+            successful_batches += 1
+            items = response.get("items", [])
+            if isinstance(items, list):
+                products.extend(items)
+        if successful_batches == 0:
             return None
-        products = response.get("items", [])
-        return products if isinstance(products, list) else []
+        return products
 
     def fetch_seller_info(self) -> Dict:
         response = self._make_request("/v1/seller/info", {})

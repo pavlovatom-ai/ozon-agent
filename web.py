@@ -129,12 +129,15 @@ def format_rating_value(rating: dict) -> str:
     return "—"
 
 
-def build_inventory_rows(products: list[dict], stock_payload: dict | None) -> list[dict]:
+def build_inventory_rows(products: list[dict], stock_payload: dict | None, warehouse_map: dict | None = None) -> list[dict]:
     if not stock_payload:
         return []
     data = stock_payload.get("data", stock_payload)
-    items = data.get("items", []) if isinstance(data, dict) else []
+    items = []
+    if isinstance(data, dict):
+        items = data.get("items", data.get("products", []))
     product_map = {product["sku"]: product for product in products}
+    warehouse_map = warehouse_map or {}
     grouped = {}
     for item in items if isinstance(items, list) else []:
         if not isinstance(item, dict):
@@ -173,9 +176,11 @@ def build_inventory_rows(products: list[dict], stock_payload: dict | None) -> li
                 reserved = int(float(reserved or 0))
             except (TypeError, ValueError):
                 reserved = 0
+            warehouse_id = str(stock.get("warehouse_id", "")).strip()
+            warehouse_info = warehouse_map.get(warehouse_id, {})
             warehouses.append({
-                "name": stock.get("warehouse_name", stock.get("name", stock.get("warehouse_id", stock.get("source", "")))),
-                "cluster": stock.get("cluster_name", stock.get("cluster", stock.get("cluster_id", ""))),
+                "name": stock.get("warehouse_name", stock.get("name", warehouse_info.get("name", stock.get("source", "")))),
+                "cluster": stock.get("cluster_name", stock.get("cluster", warehouse_info.get("cluster", ""))),
                 "quantity": quantity,
                 "reserved": reserved,
             })
@@ -263,18 +268,30 @@ async def index(request: Request):
     inventory_error = ""
     inventory_rows = []
     if visible_products:
+        warehouse_map = {}
+        cluster_list = ozon.fetch_cluster_list()
+        for cluster in cluster_list or []:
+            cluster_name = cluster.get("name", f"Кластер {cluster.get('id', '')}")
+            for logistic_cluster in cluster.get("logistic_clusters", []):
+                for warehouse in logistic_cluster.get("warehouses", []):
+                    warehouse_id = str(warehouse.get("warehouse_id", "")).strip()
+                    if warehouse_id:
+                        warehouse_map[warehouse_id] = {
+                            "name": warehouse.get("name", ""),
+                            "cluster": cluster_name,
+                        }
         stock_payload = ozon.fetch_stock_info([product["sku"] for product in visible_products])
         if stock_payload is None:
             stock_error = ozon.last_error
             product_info = ozon.fetch_product_info([product["sku"] for product in visible_products])
             if product_info is not None:
-                inventory_rows = build_inventory_rows(visible_products, {"items": product_info})
+                inventory_rows = build_inventory_rows(visible_products, {"items": product_info}, warehouse_map)
                 if not inventory_rows:
                     inventory_error = "Ozon не вернул складские остатки для отмеченных товаров."
             else:
                 inventory_error = f"Не удалось получить остатки Ozon: {stock_error}"
         else:
-            inventory_rows = build_inventory_rows(visible_products, stock_payload)
+            inventory_rows = build_inventory_rows(visible_products, stock_payload, warehouse_map)
 
     return templates.TemplateResponse(
         request,

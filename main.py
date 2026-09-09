@@ -198,12 +198,27 @@ class Database:
                 )
             ''')
             cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ozon_data_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    captured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    data_type TEXT NOT NULL,
+                    scope_key TEXT DEFAULT '',
+                    payload_json TEXT NOT NULL
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_ozon_snapshots_type_time
+                ON ozon_data_snapshots (data_type, captured_at DESC)
+            ''')
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS sku_catalog (
                     sku TEXT PRIMARY KEY,
                     short_name TEXT DEFAULT '',
                     ozon_name TEXT DEFAULT '',
                     seller_article TEXT DEFAULT '',
                     image_url TEXT DEFAULT '',
+                    local_image_path TEXT DEFAULT '',
+                    image_cached_at TEXT DEFAULT '',
                     category_id TEXT DEFAULT '',
                     category_name TEXT DEFAULT '',
                     is_visible BOOLEAN DEFAULT 0,
@@ -218,6 +233,10 @@ class Database:
                 cursor.execute("ALTER TABLE sku_catalog ADD COLUMN seller_article TEXT DEFAULT ''")
             if "image_url" not in catalog_columns:
                 cursor.execute("ALTER TABLE sku_catalog ADD COLUMN image_url TEXT DEFAULT ''")
+            if "local_image_path" not in catalog_columns:
+                cursor.execute("ALTER TABLE sku_catalog ADD COLUMN local_image_path TEXT DEFAULT ''")
+            if "image_cached_at" not in catalog_columns:
+                cursor.execute("ALTER TABLE sku_catalog ADD COLUMN image_cached_at TEXT DEFAULT ''")
             if "category_id" not in catalog_columns:
                 cursor.execute("ALTER TABLE sku_catalog ADD COLUMN category_id TEXT DEFAULT ''")
             if "category_name" not in catalog_columns:
@@ -293,9 +312,9 @@ class Database:
     def list_sku_catalog(self) -> List[Dict]:
         with self.get_connection() as conn:
             rows = conn.execute(
-                "SELECT sku, ozon_name, seller_article, image_url, category_id, category_name, is_visible FROM sku_catalog ORDER BY CAST(sku AS INTEGER), sku"
+                "SELECT sku, ozon_name, seller_article, image_url, local_image_path, image_cached_at, category_id, category_name, is_visible FROM sku_catalog ORDER BY CAST(sku AS INTEGER), sku"
             ).fetchall()
-        return [dict(zip(("sku", "ozon_name", "seller_article", "image_url", "category_id", "category_name", "is_visible"), row)) for row in rows]
+        return [dict(zip(("sku", "ozon_name", "seller_article", "image_url", "local_image_path", "image_cached_at", "category_id", "category_name", "is_visible"), row)) for row in rows]
 
     def update_sku_catalog(self, sku: str, is_visible: bool):
         with self.get_connection() as conn:
@@ -308,19 +327,99 @@ class Database:
             ''', (str(sku).strip(), 1 if is_visible else 0))
             conn.commit()
 
-    def update_sku_product_info(self, sku: str, ozon_name: str, seller_article: str, image_url: str = "", category_id: str = "", category_name: str = ""):
+    def update_sku_product_info(
+        self,
+        sku: str,
+        ozon_name: str,
+        seller_article: str,
+        image_url: str = "",
+        category_id: str = "",
+        category_name: str = "",
+        local_image_path: Optional[str] = None,
+        image_cached_at: Optional[str] = None,
+    ):
         with self.get_connection() as conn:
             conn.execute('''
                 UPDATE sku_catalog
-                SET ozon_name = ?, seller_article = ?, image_url = ?, category_id = ?, category_name = ?, updated_at = CURRENT_TIMESTAMP
+                SET ozon_name = ?, seller_article = ?, image_url = ?,
+                    local_image_path = CASE WHEN ? IS NULL THEN local_image_path ELSE ? END,
+                    image_cached_at = CASE WHEN ? IS NULL THEN image_cached_at ELSE ? END,
+                    category_id = ?, category_name = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE sku = ?
-            ''', (ozon_name.strip(), seller_article.strip(), image_url.strip(), category_id.strip(), category_name.strip(), str(sku).strip()))
+            ''', (
+                ozon_name.strip(),
+                seller_article.strip(),
+                image_url.strip(),
+                None if local_image_path is None else local_image_path.strip(),
+                None if local_image_path is None else local_image_path.strip(),
+                None if image_cached_at is None else image_cached_at.strip(),
+                None if image_cached_at is None else image_cached_at.strip(),
+                category_id.strip(),
+                category_name.strip(),
+                str(sku).strip(),
+            ))
             conn.commit()
 
     def delete_sku_catalog(self, sku: str):
         with self.get_connection() as conn:
             conn.execute("DELETE FROM sku_catalog WHERE sku = ?", (str(sku).strip(),))
             conn.commit()
+
+    def save_ozon_snapshot(self, data_type: str, payload, scope_key: str = "") -> bool:
+        """Save a raw Ozon response unless the same response was saved recently."""
+        payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        with self.get_connection() as conn:
+            recent = conn.execute('''
+                SELECT payload_json FROM ozon_data_snapshots
+                WHERE data_type = ? AND scope_key = ?
+                  AND captured_at >= datetime('now', '-60 seconds')
+                ORDER BY id DESC LIMIT 1
+            ''', (str(data_type), str(scope_key))).fetchone()
+            if recent and recent[0] == payload_json:
+                return False
+            conn.execute('''
+                INSERT INTO ozon_data_snapshots (data_type, scope_key, payload_json)
+                VALUES (?, ?, ?)
+            ''', (str(data_type), str(scope_key), payload_json))
+            conn.commit()
+        return True
+
+    def list_ozon_snapshot_types(self) -> List[Dict]:
+        with self.get_connection() as conn:
+            rows = conn.execute('''
+                SELECT data_type, COUNT(*), MAX(captured_at)
+                FROM ozon_data_snapshots
+                GROUP BY data_type
+                ORDER BY MAX(captured_at) DESC
+            ''').fetchall()
+        return [
+            {"data_type": row[0], "count": row[1], "last_captured_at": row[2]}
+            for row in rows
+        ]
+
+    def list_ozon_snapshots(self, data_type: str = "", limit: int = 100) -> List[Dict]:
+        query = '''
+            SELECT id, captured_at, data_type, scope_key, payload_json
+            FROM ozon_data_snapshots
+        '''
+        values = []
+        if data_type:
+            query += " WHERE data_type = ?"
+            values.append(data_type)
+        query += " ORDER BY captured_at DESC, id DESC LIMIT ?"
+        values.append(max(1, min(int(limit), 500)))
+        with self.get_connection() as conn:
+            rows = conn.execute(query, values).fetchall()
+        return [
+            {
+                "id": row[0],
+                "captured_at": row[1],
+                "data_type": row[2],
+                "scope_key": row[3],
+                "payload_json": row[4],
+            }
+            for row in rows
+        ]
 
     def get_sku_economics(self, sku: str) -> Dict[str, float]:
         with self.get_connection() as conn:

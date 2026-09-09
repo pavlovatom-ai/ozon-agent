@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-end gap-3 mb-4">
+    <div>
+        <h1 class="mb-1">История данных Ozon</h1>
+        <div class="text-secondary">Сохранённые снимки ответов API с датой и временем получения.</div>
+    </div>
+    <span class="badge bg-light text-dark border">{{ snapshots|length }} записей</span>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-lg-4">
+        <form method="get" action="/ozon-history">
+            <label class="form-label" for="snapshot-type">Тип данных</label>
+            <select class="form-select" id="snapshot-type" name="type" onchange="this.form.submit()">
+                <option value="">Все типы</option>
+                {% for item in snapshot_types %}
+                <option value="{{ item.data_type }}" {% if selected_type == item.data_type %}selected{% endif %}>
+                    {{ item.data_type }} ({{ item.count }})
+                </option>
+                {% endfor %}
+            </select>
+        </form>
+    </div>
+</div>
+
+{% if snapshots %}
+<div class="accordion" id="snapshot-list">
+    {% for snapshot in snapshots %}
+    <div class="accordion-item">
+        <h2 class="accordion-header" id="snapshot-heading-{{ snapshot.id }}">
+            <button class="accordion-button {% if not loop.first %}collapsed{% endif %}" type="button" data-bs-toggle="collapse" data-bs-target="#snapshot-body-{{ snapshot.id }}">
+                <span class="me-3">{{ snapshot.captured_at }}</span>
+                <strong>{{ snapshot.data_type }}</strong>
+                {% if snapshot.scope_key %}<span class="text-secondary ms-3">SKU: {{ snapshot.scope_key }}</span>{% endif %}
+            </button>
+        </h2>
+        <div id="snapshot-body-{{ snapshot.id }}" class="accordion-collapse collapse {% if loop.first %}show{% endif %}" data-bs-parent="#snapshot-list">
+            <div class="accordion-body">
+                <pre class="snapshot-json mb-0">{{ snapshot.payload_preview }}</pre>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="text-secondary">Сохранённых данных пока нет. Они появятся после открытия главной страницы и вкладки товаров.</div>
+{% endif %}
+
+<style>
+.snapshot-json { max-height: 520px; overflow: auto; background: #f7f9fb; border: 1px solid #d9e1e8; border-radius: 8px; padding: 1rem; white-space: pre-wrap; word-break: break-word; }
+[data-theme="dark"] .snapshot-json { background: #111922; border-color: #526170; color: #e7edf3; }
+</style>
+{% endblock %}

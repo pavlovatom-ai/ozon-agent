@@ -1,0 +1,112 @@
+<section class="mb-4">
+    {% if show_inventory_title|default(false) %}
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+        <h2 class="h4 mb-0">Наличие товара на складе Ozon</h2>
+        <span class="text-secondary small">Показываются товары с отметкой «Да»</span>
+    </div>
+    {% endif %}
+
+    {% if inventory_error %}
+    <div class="alert alert-warning">{{ inventory_error }}</div>
+    {% elif inventory_rows %}
+    <div class="card shadow-sm border-0">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Фото</th>
+                        <th>SKU</th>
+                        <th>Артикул продавца</th>
+                        <th>Название Ozon</th>
+                        <th class="text-end">Всего на складах, шт.</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for row in inventory_rows %}
+                <tr class="inventory-summary-row" data-inventory-toggle="inventory-details-{{ loop.index }}">
+                    <td>
+                        {% if row.product.display_image_url %}
+                        <img src="{{ row.product.display_image_url }}" alt="{{ row.product.ozon_name or ('SKU ' ~ row.product.sku) }}" class="inventory-thumb" loading="lazy" referrerpolicy="no-referrer">
+                        {% else %}<span class="inventory-thumb inventory-thumb-empty">—</span>{% endif %}
+                    </td>
+                    <td class="fw-semibold text-nowrap">{{ row.product.sku }}</td>
+                    <td>{{ row.product.seller_article or '—' }}</td>
+                    <td>{{ row.product.ozon_name or '—' }}</td>
+                    <td class="text-end fw-semibold">{{ row.total }}</td>
+                </tr>
+                <tr id="inventory-details-{{ loop.index }}" class="inventory-details-row" hidden>
+                    <td colspan="5">
+                        {% if row.clusters %}
+                        <div class="inventory-clusters">
+                            <table class="table table-sm mb-0 inventory-details-table">
+                                <thead><tr><th>Кластер</th><th class="text-end">Доступно, шт.</th><th class="text-end">Резерв, шт.</th></tr></thead>
+                                <tbody>
+                                {% for cluster in row.clusters %}
+                                    <tr class="inventory-cluster-row">
+                                        <th><span class="inventory-cluster-marker" aria-hidden="true"></span><span>{{ cluster.name }}</span></th>
+                                        <th class="text-end">{{ cluster.total }}</th>
+                                        <th class="text-end">{{ cluster.reserved }}</th>
+                                    </tr>
+                                    {% for warehouse in cluster.warehouses %}
+                                    <tr class="inventory-warehouse-row">
+                                        <td class="inventory-warehouse-name"><span class="inventory-warehouse-branch" aria-hidden="true"></span>{{ warehouse.name }}</td>
+                                        <td class="text-end">{{ warehouse.quantity }}</td>
+                                        <td class="text-end">{{ warehouse.reserved }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                {% endfor %}
+                                    <tr class="inventory-total-row">
+                                        <th>Итого по товару</th>
+                                        <th class="text-end">{{ row.total }}</th>
+                                        <th class="text-end">{{ row.reserved }}</th>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        {% else %}
+                        <span class="text-secondary small">Ozon не передал детализацию по кластерам и складам.</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% else %}
+    <div class="text-secondary">Нет товаров, отмеченных для отображения, или Ozon не вернул остатки.</div>
+    {% endif %}
+</section>
+<style>
+.inventory-thumb { width: 48px; height: 48px; object-fit: cover; border-radius: 7px; border: 1px solid #d9e1e8; display: inline-grid; place-items: center; background: #f5f7f9; }
+.inventory-thumb-empty { color: #8a98a6; font-size: 1.15rem; }
+.inventory-summary-row { cursor: pointer; }
+.inventory-summary-row:hover { background-color: rgba(13, 110, 253, .06); }
+.inventory-details-row > td { background: #f8fafc; padding: 1rem 1.25rem; }
+.inventory-clusters { display: grid; gap: .75rem; }
+.inventory-details-table { background: #fff; border: 1px solid #e4eaf0; border-radius: 8px; overflow: hidden; }
+.inventory-cluster-row { background: #dbeaf8; color: #17344d; }
+.inventory-cluster-row th { padding-top: .75rem; padding-bottom: .75rem; }
+.inventory-cluster-marker { display: inline-block; width: 8px; height: 8px; margin: 0 .55rem .1rem 0; border-radius: 50%; background: #2878b8; }
+.inventory-warehouse-row td { border-top: 0; color: #526170; }
+.inventory-warehouse-name { padding-left: 2rem !important; }
+.inventory-warehouse-branch { display: inline-block; width: 12px; height: 12px; margin: 0 .55rem .1rem 0; border-left: 1px solid #9db1c1; border-bottom: 1px solid #9db1c1; border-radius: 0 0 0 4px; }
+.inventory-total-row { border-top: 2px solid #aebdca; background: #f3f6f9; }
+.inventory-total-row th { padding-top: .8rem; padding-bottom: .8rem; }
+[data-theme="dark"] .inventory-details-table { border-color: #526170; }
+[data-theme="dark"] .inventory-cluster-row { background: #29445a; color: #fff; }
+[data-theme="dark"] .inventory-warehouse-row td { color: #c4d0db; }
+[data-theme="dark"] .inventory-total-row { background: #263544; }
+</style>
+<script>
+(function () {
+    document.querySelectorAll('[data-inventory-toggle]').forEach(function (row) {
+        row.addEventListener('click', function () {
+            const details = document.getElementById(row.dataset.inventoryToggle);
+            if (!details) return;
+            details.hidden = !details.hidden;
+            row.classList.toggle('inventory-row-open', !details.hidden);
+        });
+    });
+}());
+</script>

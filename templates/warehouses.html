@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+    <div>
+        <h1 class="h3 mb-1">Склады</h1>
+        <div class="text-secondary">Наличие товаров по кластерам и складам Ozon.</div>
+    </div>
+    <span class="text-secondary small">Показываются товары с отметкой «Да»</span>
+</div>
+
+{% include "_inventory_block.html" %}
+{% endblock %}

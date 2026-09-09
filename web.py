@@ -1,9 +1,19 @@
 import os
+import hashlib
+import json
+import logging
+import time
+from pathlib import Path
+from threading import Lock
+from urllib.parse import urlparse
+
 import bleach
 import markdown
+import requests
 from datetime import date, datetime
 from fastapi import FastAPI, Request, Form, HTTPException, File, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import uvicorn
 from main import AIClient, Database, Config, OzonAPIClient
@@ -13,6 +23,11 @@ from unit_economics import UnitEconomicsInput, calculate_unit_economics, recomme
 from competitor_monitor import check_competitor
 
 app = FastAPI(title="Ozon AI Helper - Web Interface")
+WEB_LOGGER = logging.getLogger(__name__)
+RUNTIME_IMAGE_DIR = Path("runtime") / "images"
+IMAGE_CACHE_TTL_DAYS = max(1, int(os.getenv("IMAGE_CACHE_TTL_DAYS", "7")))
+RUNTIME_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/runtime-images", StaticFiles(directory=str(RUNTIME_IMAGE_DIR)), name="runtime-images")
 
 
 @app.get("/favicon.svg", include_in_schema=False)
@@ -30,6 +45,90 @@ templates.env.cache = {}
 templates.env.cache_size = 0
 
 db = Database()
+OZON_CACHE = {}
+OZON_CACHE_LOCK = Lock()
+
+
+def cached_ozon_call(cache_key: str, ttl_seconds: int, loader):
+    now = time.monotonic()
+    with OZON_CACHE_LOCK:
+        cached = OZON_CACHE.get(cache_key)
+        if cached and now - cached["created_at"] < ttl_seconds:
+            return cached["value"]
+
+    value = loader()
+    if value is not None:
+        with OZON_CACHE_LOCK:
+            OZON_CACHE[cache_key] = {"created_at": time.monotonic(), "value": value}
+    return value
+
+
+def get_image_extension(image_url: str) -> str:
+    path = urlparse(image_url).path or ""
+    suffix = Path(path).suffix.lower()
+    if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}:
+        return suffix
+    return ".jpg"
+
+
+def cache_sku_image(
+    sku: str,
+    image_url: str,
+    current_local_path: str = "",
+    cached_at: str = "",
+) -> tuple[str, str]:
+    clean_sku = str(sku or "").strip()
+    clean_url = str(image_url or "").strip()
+    if not clean_sku or not clean_url:
+        return "", ""
+
+    local_name = str(current_local_path or "").strip()
+    cached_time = None
+    if cached_at:
+        try:
+            cached_time = datetime.fromisoformat(str(cached_at).replace("Z", "+00:00"))
+        except ValueError:
+            cached_time = None
+    if cached_time is not None:
+        if cached_time.tzinfo is not None:
+            cached_time = cached_time.replace(tzinfo=None)
+        cache_is_fresh = (datetime.utcnow() - cached_time).total_seconds() < IMAGE_CACHE_TTL_DAYS * 86400
+    else:
+        cache_is_fresh = False
+
+    if local_name:
+        current_file = RUNTIME_IMAGE_DIR / local_name
+        if current_file.is_file() and cache_is_fresh:
+            return local_name, str(cached_at)
+
+    image_hash = hashlib.sha1(clean_url.encode("utf-8")).hexdigest()[:12]
+    file_name = f"{clean_sku}_{image_hash}{get_image_extension(clean_url)}"
+    target_path = RUNTIME_IMAGE_DIR / file_name
+    if target_path.is_file() and cache_is_fresh:
+        return file_name, str(cached_at)
+
+    try:
+        response = requests.get(clean_url, timeout=15)
+        response.raise_for_status()
+        content = response.content
+        if not content:
+            return local_name if RUNTIME_IMAGE_DIR.joinpath(local_name).is_file() else "", str(cached_at) if local_name else ""
+        target_path.write_bytes(content)
+        return file_name, datetime.utcnow().isoformat(timespec="seconds")
+    except Exception as exc:
+        WEB_LOGGER.warning("Не удалось закэшировать изображение SKU %s: %s", clean_sku, exc)
+        if local_name and (RUNTIME_IMAGE_DIR / local_name).is_file():
+            return local_name, str(cached_at)
+        return "", ""
+
+
+def apply_display_image_urls(products: list[dict]):
+    for product in products:
+        local_name = str(product.get("local_image_path", "")).strip()
+        if local_name and (RUNTIME_IMAGE_DIR / local_name).is_file():
+            product["display_image_url"] = f"/runtime-images/{local_name}"
+        else:
+            product["display_image_url"] = str(product.get("image_url", "")).strip()
 
 
 def format_ui_date(value) -> str:
@@ -150,7 +249,9 @@ def build_inventory_rows(products: list[dict], stock_payload: dict | None, wareh
         stock_items = item.get("stocks", item.get("warehouse_stocks", []))
         if isinstance(stock_items, dict):
             stock_items = stock_items.get("items", stock_items.get("stocks", []))
-        if not stock_items and any(key in item for key in ("available_stock_count", "present", "available", "stock")):
+        if not stock_items and item.get("warehouse_id") not in (None, ""):
+            stock_items = [item]
+        elif not stock_items and any(key in item for key in ("available_stock_count", "present", "available", "stock")):
             quantity = item.get("present", item.get("available_stock_count", item.get("available", item.get("stock", 0)))) or 0
             reserved = item.get("reserved", item.get("reserved_stock_count", 0)) or 0
             try:
@@ -179,8 +280,8 @@ def build_inventory_rows(products: list[dict], stock_payload: dict | None, wareh
             warehouse_id = str(stock.get("warehouse_id", "")).strip()
             warehouse_info = warehouse_map.get(warehouse_id, {})
             warehouses.append({
-                "name": stock.get("warehouse_name", stock.get("name", warehouse_info.get("name", stock.get("source", "")))),
-                "cluster": stock.get("cluster_name", stock.get("cluster", warehouse_info.get("cluster", ""))),
+                "name": stock.get("warehouse_name", stock.get("name", warehouse_info.get("name", stock.get("source", "")))) or f"Склад ID {warehouse_id}",
+                "cluster": stock.get("cluster_name", stock.get("cluster", warehouse_info.get("cluster", ""))) or f"Кластер для склада ID {warehouse_id}",
                 "quantity": quantity,
                 "reserved": reserved,
             })
@@ -244,6 +345,63 @@ def render_report_markdown(content: str) -> str:
     return bleach.clean(rendered, tags=allowed_tags, attributes=allowed_attributes, strip=True)
 
 
+def load_inventory_data() -> dict:
+    ozon = OzonAPIClient(Config.OZON_CLIENT_ID, Config.OZON_API_KEY)
+    visible_products = [product for product in db.list_sku_catalog() if product["is_visible"]]
+    apply_display_image_urls(visible_products)
+    seller_info = cached_ozon_call("seller_info", 300, ozon.fetch_seller_info) or {}
+    if seller_info:
+        db.save_ozon_snapshot("seller_info", seller_info)
+
+    inventory_error = ""
+    inventory_rows = []
+    cluster_list = cached_ozon_call("cluster_list", 3600, ozon.fetch_cluster_list)
+    if cluster_list:
+        db.save_ozon_snapshot("cluster_list", cluster_list)
+
+    if visible_products:
+        warehouse_map = {}
+        for cluster in cluster_list or []:
+            cluster_name = cluster.get("name", f"Кластер {cluster.get('id', '')}")
+            for logistic_cluster in cluster.get("logistic_clusters", []):
+                for warehouse in logistic_cluster.get("warehouses", []):
+                    warehouse_id = str(warehouse.get("warehouse_id", "")).strip()
+                    if warehouse_id:
+                        warehouse_map[warehouse_id] = {
+                            "name": warehouse.get("name", ""),
+                            "cluster": cluster_name,
+                        }
+        visible_skus = tuple(product["sku"] for product in visible_products)
+        stock_payload = cached_ozon_call(
+            f"stock_info:{visible_skus}",
+            60,
+            lambda: ozon.fetch_stock_info(list(visible_skus)),
+        )
+        if stock_payload:
+            db.save_ozon_snapshot("stock_info", stock_payload, ",".join(visible_skus))
+        if stock_payload is None:
+            stock_error = ozon.last_error
+            product_info = cached_ozon_call(
+                f"product_info:{visible_skus}",
+                300,
+                lambda: ozon.fetch_product_info(list(visible_skus)),
+            )
+            if product_info is not None:
+                inventory_rows = build_inventory_rows(visible_products, {"items": product_info}, warehouse_map)
+                if not inventory_rows:
+                    inventory_error = "Ozon не вернул складские остатки для отмеченных товаров."
+            else:
+                inventory_error = f"Не удалось получить остатки Ozon: {stock_error}"
+        else:
+            inventory_rows = build_inventory_rows(visible_products, stock_payload, warehouse_map)
+
+    return {
+        "inventory_rows": inventory_rows,
+        "inventory_error": inventory_error,
+        "visible_products_count": len(visible_products),
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     with db.get_connection() as conn:
@@ -257,42 +415,16 @@ async def index(request: Request):
         cursor.execute("SELECT COUNT(*) FROM ai_test_logs")
         logs_count = cursor.fetchone()[0]
 
+    inventory = load_inventory_data()
     ozon = OzonAPIClient(Config.OZON_CLIENT_ID, Config.OZON_API_KEY)
-    seller_info = ozon.fetch_seller_info() or {}
+    seller_info = cached_ozon_call("seller_info", 300, ozon.fetch_seller_info) or {}
+    if seller_info:
+        db.save_ozon_snapshot("seller_info", seller_info)
     company = seller_info.get("company", {}) if isinstance(seller_info, dict) and "company" in seller_info else {}
     subscription = seller_info.get("subscription", {}) if isinstance(seller_info, dict) and "subscription" in seller_info else {}
     ratings = seller_info.get("ratings", []) if isinstance(seller_info, dict) and "ratings" in seller_info else []
     ratings = normalize_ratings(ratings)
     seller_error = seller_info.get("error") if isinstance(seller_info, dict) and "error" in seller_info else ""
-    visible_products = [product for product in db.list_sku_catalog() if product["is_visible"]]
-    inventory_error = ""
-    inventory_rows = []
-    if visible_products:
-        warehouse_map = {}
-        cluster_list = ozon.fetch_cluster_list()
-        for cluster in cluster_list or []:
-            cluster_name = cluster.get("name", f"Кластер {cluster.get('id', '')}")
-            for logistic_cluster in cluster.get("logistic_clusters", []):
-                for warehouse in logistic_cluster.get("warehouses", []):
-                    warehouse_id = str(warehouse.get("warehouse_id", "")).strip()
-                    if warehouse_id:
-                        warehouse_map[warehouse_id] = {
-                            "name": warehouse.get("name", ""),
-                            "cluster": cluster_name,
-                        }
-        stock_payload = ozon.fetch_stock_info([product["sku"] for product in visible_products])
-        if stock_payload is None:
-            stock_error = ozon.last_error
-            product_info = ozon.fetch_product_info([product["sku"] for product in visible_products])
-            if product_info is not None:
-                inventory_rows = build_inventory_rows(visible_products, {"items": product_info}, warehouse_map)
-                if not inventory_rows:
-                    inventory_error = "Ozon не вернул складские остатки для отмеченных товаров."
-            else:
-                inventory_error = f"Не удалось получить остатки Ozon: {stock_error}"
-        else:
-            inventory_rows = build_inventory_rows(visible_products, stock_payload, warehouse_map)
-
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -306,10 +438,20 @@ async def index(request: Request):
             "subscription": subscription,
             "ratings": ratings,
             "seller_error": seller_error,
-            "inventory_rows": inventory_rows,
-            "inventory_error": inventory_error,
+            "inventory_rows": inventory["inventory_rows"],
+            "inventory_error": inventory["inventory_error"],
             "reports": list_reports()[:5],
         }
+    )
+
+
+@app.get("/warehouses", response_class=HTMLResponse)
+async def warehouses_page(request: Request):
+    inventory = load_inventory_data()
+    return templates.TemplateResponse(
+        request,
+        "warehouses.html",
+        inventory,
     )
 
 
@@ -320,6 +462,29 @@ async def reports_page(request: Request):
         request,
         "reports.html",
         {"reports": list_reports(), "date_from": date_from, "date_to": date_to, "error": ""},
+    )
+
+
+@app.get("/ozon-history", response_class=HTMLResponse)
+async def ozon_history_page(request: Request):
+    selected_type = request.query_params.get("type", "").strip()
+    snapshot_rows = db.list_ozon_snapshots(selected_type, 100)
+    snapshots = []
+    for row in snapshot_rows:
+        try:
+            payload = json.loads(row["payload_json"])
+            payload_preview = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        except (TypeError, json.JSONDecodeError):
+            payload_preview = row["payload_json"]
+        snapshots.append({**row, "payload_preview": payload_preview})
+    return templates.TemplateResponse(
+        request,
+        "ozon_history.html",
+        {
+            "snapshot_types": db.list_ozon_snapshot_types(),
+            "snapshots": snapshots,
+            "selected_type": selected_type,
+        },
     )
 
 
@@ -626,7 +791,9 @@ async def products_page(request: Request):
     error = ""
     ozon = OzonAPIClient(Config.OZON_CLIENT_ID, Config.OZON_API_KEY)
     category_names = {}
-    ozon_catalog = ozon.fetch_product_list_paginated()
+    ozon_catalog = cached_ozon_call("product_catalog", 300, ozon.fetch_product_list_paginated)
+    if ozon_catalog:
+        db.save_ozon_snapshot("product_catalog", ozon_catalog)
     if ozon_catalog is None:
         error = f"Не удалось получить список товаров из Ozon: {ozon.last_error}"
     else:
@@ -638,12 +805,21 @@ async def products_page(request: Request):
     products = db.list_sku_catalog()
     catalog_skus = [product["sku"] for product in products]
     if catalog_skus:
-        product_info = ozon.fetch_product_info(catalog_skus)
+        product_info = cached_ozon_call(
+            f"product_info:{tuple(catalog_skus)}",
+            300,
+            lambda: ozon.fetch_product_info(catalog_skus),
+        )
+        if product_info:
+            db.save_ozon_snapshot("product_info", product_info, ",".join(catalog_skus))
         if product_info is None:
             error = f"Не удалось получить карточки товаров из Ozon: {ozon.last_error}"
         else:
             returned_skus = set()
             existing_category_names = {product["sku"]: product["category_name"] for product in products}
+            existing_image_urls = {product["sku"]: str(product.get("image_url", "")).strip() for product in products}
+            existing_local_paths = {product["sku"]: str(product.get("local_image_path", "")).strip() for product in products}
+            existing_image_cached_at = {product["sku"]: str(product.get("image_cached_at", "")).strip() for product in products}
             for item in product_info:
                 sku = str(item.get("sku", "")).strip()
                 if not sku:
@@ -658,6 +834,14 @@ async def products_page(request: Request):
                 if not image_url:
                     images = item.get("images") or []
                     image_url = str(images[0]).strip() if isinstance(images, list) and images else ""
+                current_local_path = existing_local_paths.get(sku, "")
+                current_cached_at = existing_image_cached_at.get(sku, "")
+                if existing_image_urls.get(sku, "") != image_url:
+                    current_local_path = ""
+                    current_cached_at = ""
+                cached_local_path, cached_at = cache_sku_image(
+                    sku, image_url, current_local_path, current_cached_at
+                ) if image_url else ("", "")
                 db.update_sku_product_info(
                     sku,
                     str(item.get("name", "")),
@@ -665,13 +849,17 @@ async def products_page(request: Request):
                     image_url,
                     str(item.get("description_category_id", "")),
                     existing_category_names.get(sku, ""),
+                    cached_local_path,
+                    cached_at,
                 )
             if "123" in catalog_skus and "123" not in returned_skus:
                 db.delete_sku_catalog("123")
         products = db.list_sku_catalog()
     category_ids = {product["category_id"] for product in products if product["category_id"]}
     if category_ids:
-        category_names = ozon.fetch_category_tree() or {}
+        category_names = cached_ozon_call("category_tree", 3600, ozon.fetch_category_tree) or {}
+        if category_names:
+            db.save_ozon_snapshot("category_tree", category_names)
         if category_names:
             for product in products:
                 category_id = product["category_id"]
@@ -691,6 +879,7 @@ async def products_page(request: Request):
     }, key=lambda value: value[1])
     if selected_category:
         products = [product for product in products if product["category_id"] == selected_category]
+    apply_display_image_urls(products)
     return templates.TemplateResponse(request, "products.html", {
         "products": products,
         "categories": categories,

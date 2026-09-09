@@ -1,0 +1,107 @@
+{% if inventory_error %}
+<div class="alert alert-warning">{{ inventory_error }}</div>
+{% elif inventory_rows %}
+<div class="warehouse-products">
+{% for row in inventory_rows %}
+    <section class="warehouse-product-card">
+        <header class="warehouse-product-header">
+            <div class="warehouse-product-label">Товар</div>
+            {% if row.product.display_image_url %}
+            <img src="{{ row.product.display_image_url }}" alt="Фото товара" class="warehouse-product-image" loading="lazy" referrerpolicy="no-referrer">
+            {% else %}<span class="warehouse-product-image warehouse-product-image-empty">—</span>{% endif %}
+            <div class="warehouse-product-info">
+                <span class="warehouse-product-article">{{ row.product.seller_article or ('SKU ' ~ row.product.sku) }}</span>
+                <span class="warehouse-product-sku">SKU {{ row.product.sku }}</span>
+            </div>
+            <div class="warehouse-product-total"><span>Всего на складах</span><strong>{{ row.total }}</strong></div>
+        </header>
+
+        <div class="warehouse-metrics">
+            {% for metric in row.stock_metrics %}
+            <div class="warehouse-metric-card">
+                <span>{{ metric.label }}</span>
+                <strong>{{ metric.value if metric.value is not none else '—' }}</strong>
+            </div>
+            {% endfor %}
+        </div>
+
+        <div class="warehouse-table-scroll">
+            <table class="table align-middle mb-0 warehouse-table">
+                <thead>
+                    <tr><th>Кластер / склад</th><th class="text-end">Остаток, шт.</th><th class="text-end">Резерв, шт.</th></tr>
+                </thead>
+                <tbody>
+                {% for cluster in row.clusters %}
+                    <tr class="warehouse-cluster-row">
+                        <th><span class="warehouse-cluster-marker" aria-hidden="true"></span>{{ cluster.name }}</th>
+                        <th class="text-end">{{ cluster.total }}</th>
+                        <th class="text-end">{{ cluster.reserved }}</th>
+                    </tr>
+                    {% for warehouse in cluster.warehouses %}
+                    <tr class="warehouse-stock-row">
+                        <td><span class="warehouse-branch" aria-hidden="true"></span>{{ warehouse.name }}</td>
+                        <td class="text-end">{{ warehouse.quantity }}</td>
+                        <td class="text-end">{{ warehouse.reserved }}</td>
+                    </tr>
+                    {% endfor %}
+                {% endfor %}
+                <tr class="warehouse-product-total-row">
+                    <th>Итого по товару</th>
+                    <th class="text-end">{{ row.total }}</th>
+                    <th class="text-end">{{ row.reserved }}</th>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+{% endfor %}
+</div>
+{% else %}
+<div class="text-secondary">Нет товаров, отмеченных для отображения, или Ozon не вернул остатки.</div>
+{% endif %}
+
+<style>
+.warehouse-products { display: grid; gap: 1.25rem; }
+.warehouse-product-card { overflow: hidden; background: #fff; border: 1px solid #d9e3eb; border-radius: 10px; box-shadow: 0 2px 8px rgba(23, 52, 77, .06); }
+.warehouse-product-header { display: grid; grid-template-columns: auto 72px minmax(180px, 1fr) auto; align-items: center; gap: 1rem; padding: 1rem 1.25rem; background: #f7fafc; border-bottom: 1px solid #e4eaf0; }
+.warehouse-product-label { color: #526170; font-size: .8rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.warehouse-product-image { width: 52px; height: 52px; object-fit: cover; border-radius: 7px; border: 1px solid #cbd8e2; background: #f5f7f9; display: inline-grid; place-items: center; }
+.warehouse-product-image-empty { color: #8a98a6; font-size: 1.15rem; }
+.warehouse-product-info { display: flex; flex-direction: column; gap: .2rem; }
+.warehouse-product-article { color: #17344d; font-size: 1rem; font-weight: 700; }
+.warehouse-product-sku { color: #687887; font-size: .8rem; }
+.warehouse-product-total { display: flex; flex-direction: column; align-items: flex-end; gap: .2rem; padding-left: 1rem; border-left: 1px solid #d9e3eb; }
+.warehouse-product-total span { color: #687887; font-size: .78rem; }
+.warehouse-product-total strong { color: #17344d; font-size: 1.35rem; }
+.warehouse-metrics { display: grid; grid-template-columns: repeat(6, minmax(120px, 1fr)); gap: .6rem; padding: 1rem 1.25rem; background: #fff; border-bottom: 1px solid #e4eaf0; }
+.warehouse-metric-card { display: flex; min-height: 68px; flex-direction: column; justify-content: space-between; gap: .3rem; padding: .7rem .8rem; border: 1px solid #d9e3eb; border-radius: 8px; background: #fbfdfe; }
+.warehouse-metric-card span { color: #687887; font-size: .75rem; line-height: 1.25; }
+.warehouse-metric-card strong { color: #17344d; font-size: 1.15rem; }
+.warehouse-table-scroll { overflow-x: auto; }
+.warehouse-table { min-width: 600px; }
+.warehouse-table th, .warehouse-table td { padding: .7rem 1.25rem; }
+.warehouse-table thead th { color: #526170; font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; white-space: nowrap; }
+.warehouse-cluster-row { background: #e7f1f8; color: #17344d; }
+.warehouse-cluster-row th { font-weight: 700; }
+.warehouse-cluster-marker { display: inline-block; width: 8px; height: 8px; margin: 0 .55rem .1rem 0; border-radius: 50%; background: #2878b8; }
+.warehouse-stock-row td { border-top: 0; color: #526170; background: #fff; }
+.warehouse-stock-row td:first-child { padding-left: 2.5rem; }
+.warehouse-branch { display: inline-block; width: 13px; height: 13px; margin: 0 .55rem .1rem 0; border-left: 1px solid #9db1c1; border-bottom: 1px solid #9db1c1; border-radius: 0 0 0 4px; }
+.warehouse-product-total-row { border-top: 2px solid #b7c7d3; background: #f3f6f9; }
+.warehouse-product-total-row th { font-weight: 700; }
+@media (max-width: 800px) {
+    .warehouse-product-header { grid-template-columns: auto 60px 1fr; }
+    .warehouse-product-total { grid-column: 1 / -1; align-items: flex-start; padding: .6rem 0 0; border-left: 0; border-top: 1px solid #d9e3eb; }
+    .warehouse-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+[data-theme="dark"] .warehouse-product-card { background: #1b2530; border-color: #526170; }
+[data-theme="dark"] .warehouse-product-header, [data-theme="dark"] .warehouse-metrics { background: #202d3a; border-color: #526170; }
+[data-theme="dark"] .warehouse-product-total { border-color: #526170; }
+[data-theme="dark"] .warehouse-product-article, [data-theme="dark"] .warehouse-product-total strong { color: #fff; }
+[data-theme="dark"] .warehouse-cluster-row { background: #29445a; color: #fff; }
+[data-theme="dark"] .warehouse-stock-row td { background: #1b2530; color: #c4d0db; }
+[data-theme="dark"] .warehouse-product-total-row { background: #263544; }
+[data-theme="dark"] .warehouse-metric-card { background: #1b2530; border-color: #526170; }
+[data-theme="dark"] .warehouse-metric-card span { color: #aebbc8; }
+[data-theme="dark"] .warehouse-metric-card strong { color: #fff; }
+</style>

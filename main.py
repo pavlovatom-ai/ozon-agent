@@ -824,6 +824,13 @@ class OzonAPIClient:
             cursor = response["cursor"]
         return {"products": products}
 
+    def fetch_analytics_stock_info(self, skus: List[str]) -> Optional[Dict]:
+        values = [str(sku).strip() for sku in skus if str(sku).strip()]
+        if not values:
+            return {"items": []}
+        response = self._make_request("/v1/analytics/stocks", {"skus": values[:1000]})
+        return response if response is not None else None
+
     def fetch_cluster_list(self) -> Optional[List[Dict]]:
         response = self._make_request("/v1/cluster/list", {
             "cluster_type": "CLUSTER_TYPE_OZON",

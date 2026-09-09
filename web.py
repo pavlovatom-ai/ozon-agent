@@ -311,6 +311,59 @@ def build_inventory_rows(products: list[dict], stock_payload: dict | None, wareh
     return rows
 
 
+def extract_analytics_stock_items(payload: dict | None) -> list[dict]:
+    if not payload:
+        return []
+    data = payload.get("data", payload)
+    if isinstance(data, dict):
+        for key in ("items", "products", "rows", "stocks"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return data if isinstance(data, list) else []
+
+
+def analytics_stock_by_sku(payload: dict | None) -> dict[str, dict]:
+    result = {}
+    for item in extract_analytics_stock_items(payload):
+        sku = str(item.get("sku", item.get("product_id", item.get("id", "")))).strip()
+        if sku:
+            result[sku] = item
+    return result
+
+
+def first_stock_value(item: dict, *keys: str):
+    for key in keys:
+        value = item.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def stock_metric_rows(item: dict | None, warehouse_total: int, warehouse_reserved: int) -> list[dict]:
+    item = item or {}
+    present = first_stock_value(item, "present", "present_stock_count", "total_stock_count", "stock")
+    reserved = first_stock_value(item, "reserved", "reserved_stock_count")
+    available = first_stock_value(item, "available", "available_stock_count", "available_to_sell")
+    preparing = first_stock_value(item, "preparing_for_sale", "preparing_for_sale_count", "in_process_at_warehouse")
+    removed = first_stock_value(item, "removed_from_sale", "removed_from_sale_count", "defect_stock_count")
+    in_transit = first_stock_value(item, "in_transit", "in_transit_count", "transit_stock_count")
+    if present is None:
+        present = warehouse_total
+    if reserved is None:
+        reserved = warehouse_reserved
+    if available is None and present is not None and reserved is not None:
+        available = max(int(float(present)) - int(float(reserved)), 0)
+    return [
+        {"label": "Всего товара", "value": present},
+        {"label": "Доступно к продаже", "value": available},
+        {"label": "Зарезервировано", "value": reserved},
+        {"label": "Готовится к продаже", "value": preparing},
+        {"label": "Снято с продажи", "value": removed},
+        {"label": "В пути", "value": in_transit},
+    ]
+
+
 def normalize_ratings(raw_ratings):
     if not isinstance(raw_ratings, list):
         return []
@@ -394,6 +447,22 @@ def load_inventory_data() -> dict:
                 inventory_error = f"Не удалось получить остатки Ozon: {stock_error}"
         else:
             inventory_rows = build_inventory_rows(visible_products, stock_payload, warehouse_map)
+
+        analytics_payload = cached_ozon_call(
+            f"analytics_stock:{visible_skus}",
+            300,
+            lambda: ozon.fetch_analytics_stock_info(list(visible_skus)),
+        )
+        if analytics_payload:
+            db.save_ozon_snapshot("analytics_stock", analytics_payload, ",".join(visible_skus))
+        analytics_by_sku = analytics_stock_by_sku(analytics_payload)
+        for row in inventory_rows:
+            product_sku = str(row["product"].get("sku", "")).strip()
+            row["stock_metrics"] = stock_metric_rows(
+                analytics_by_sku.get(product_sku),
+                row.get("total", 0),
+                row.get("reserved", 0),
+            )
 
     return {
         "inventory_rows": inventory_rows,

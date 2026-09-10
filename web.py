@@ -398,17 +398,23 @@ def render_report_markdown(content: str) -> str:
     return bleach.clean(rendered, tags=allowed_tags, attributes=allowed_attributes, strip=True)
 
 
-def load_inventory_data() -> dict:
+def load_inventory_data(force_refresh: bool = False) -> dict:
     ozon = OzonAPIClient(Config.OZON_CLIENT_ID, Config.OZON_API_KEY)
     visible_products = [product for product in db.list_sku_catalog() if product["is_visible"]]
     apply_display_image_urls(visible_products)
-    seller_info = cached_ozon_call("seller_info", 300, ozon.fetch_seller_info) or {}
+    seller_info = db.get_latest_ozon_snapshot("seller_info")
+    if seller_info is None and force_refresh:
+        seller_info = cached_ozon_call("seller_info", 300, ozon.fetch_seller_info) or {}
     if seller_info:
         db.save_ozon_snapshot("seller_info", seller_info)
 
     inventory_error = ""
     inventory_rows = []
-    cluster_list = cached_ozon_call("cluster_list", 3600, ozon.fetch_cluster_list)
+    cluster_list = None if force_refresh else db.get_latest_ozon_snapshot("cluster_list")
+    if cluster_list is None and force_refresh:
+        cluster_list = cached_ozon_call("cluster_list", 3600, ozon.fetch_cluster_list)
+    if cluster_list is None:
+        cluster_list = db.get_latest_ozon_snapshot("cluster_list") or []
     if cluster_list:
         db.save_ozon_snapshot("cluster_list", cluster_list)
 
@@ -425,20 +431,29 @@ def load_inventory_data() -> dict:
                             "cluster": cluster_name,
                         }
         visible_skus = tuple(product["sku"] for product in visible_products)
-        stock_payload = cached_ozon_call(
-            f"stock_info:{visible_skus}",
-            60,
-            lambda: ozon.fetch_stock_info(list(visible_skus)),
-        )
+        snapshot_scope = ",".join(visible_skus)
+        stock_payload = None if force_refresh else db.get_latest_ozon_snapshot("stock_info", snapshot_scope)
+        if stock_payload is None and not force_refresh:
+            stock_payload = db.get_latest_ozon_snapshot("stock_info")
+        if stock_payload is None and force_refresh:
+            stock_payload = cached_ozon_call(
+                f"stock_info:{visible_skus}",
+                60,
+                lambda: ozon.fetch_stock_info(list(visible_skus)),
+            )
+        if stock_payload is None:
+            stock_payload = db.get_latest_ozon_snapshot("stock_info", snapshot_scope)
         if stock_payload:
-            db.save_ozon_snapshot("stock_info", stock_payload, ",".join(visible_skus))
+            db.save_ozon_snapshot("stock_info", stock_payload, snapshot_scope)
         if stock_payload is None:
             stock_error = ozon.last_error
-            product_info = cached_ozon_call(
-                f"product_info:{visible_skus}",
-                300,
-                lambda: ozon.fetch_product_info(list(visible_skus)),
-            )
+            product_info = None
+            if force_refresh:
+                product_info = cached_ozon_call(
+                    f"product_info:{visible_skus}",
+                    300,
+                    lambda: ozon.fetch_product_info(list(visible_skus)),
+                )
             if product_info is not None:
                 inventory_rows = build_inventory_rows(visible_products, {"items": product_info}, warehouse_map)
                 if not inventory_rows:
@@ -448,13 +463,19 @@ def load_inventory_data() -> dict:
         else:
             inventory_rows = build_inventory_rows(visible_products, stock_payload, warehouse_map)
 
-        analytics_payload = cached_ozon_call(
-            f"analytics_stock:{visible_skus}",
-            300,
-            lambda: ozon.fetch_analytics_stock_info(list(visible_skus)),
-        )
+        analytics_payload = None if force_refresh else db.get_latest_ozon_snapshot("analytics_stock", snapshot_scope)
+        if analytics_payload is None and not force_refresh:
+            analytics_payload = db.get_latest_ozon_snapshot("analytics_stock")
+        if analytics_payload is None and force_refresh:
+            analytics_payload = cached_ozon_call(
+                f"analytics_stock:{visible_skus}",
+                300,
+                lambda: ozon.fetch_analytics_stock_info(list(visible_skus)),
+            )
+        if analytics_payload is None:
+            analytics_payload = db.get_latest_ozon_snapshot("analytics_stock", snapshot_scope)
         if analytics_payload:
-            db.save_ozon_snapshot("analytics_stock", analytics_payload, ",".join(visible_skus))
+            db.save_ozon_snapshot("analytics_stock", analytics_payload, snapshot_scope)
         analytics_by_sku = analytics_stock_by_sku(analytics_payload)
         for row in inventory_rows:
             product_sku = str(row["product"].get("sku", "")).strip()
@@ -486,7 +507,9 @@ async def index(request: Request):
 
     inventory = load_inventory_data()
     ozon = OzonAPIClient(Config.OZON_CLIENT_ID, Config.OZON_API_KEY)
-    seller_info = cached_ozon_call("seller_info", 300, ozon.fetch_seller_info) or {}
+    seller_info = db.get_latest_ozon_snapshot("seller_info") or {}
+    if request.query_params.get("refresh") == "1":
+        seller_info = cached_ozon_call("seller_info", 300, ozon.fetch_seller_info) or seller_info
     if seller_info:
         db.save_ozon_snapshot("seller_info", seller_info)
     company = seller_info.get("company", {}) if isinstance(seller_info, dict) and "company" in seller_info else {}
@@ -516,7 +539,7 @@ async def index(request: Request):
 
 @app.get("/warehouses", response_class=HTMLResponse)
 async def warehouses_page(request: Request):
-    inventory = load_inventory_data()
+    inventory = load_inventory_data(request.query_params.get("refresh") == "1")
     return templates.TemplateResponse(
         request,
         "warehouses.html",

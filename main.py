@@ -421,6 +421,25 @@ class Database:
             for row in rows
         ]
 
+    def get_latest_ozon_snapshot(self, data_type: str, scope_key: str = ""):
+        query = '''
+            SELECT payload_json FROM ozon_data_snapshots
+            WHERE data_type = ?
+        '''
+        values = [str(data_type)]
+        if scope_key:
+            query += " AND scope_key = ?"
+            values.append(str(scope_key))
+        query += " ORDER BY captured_at DESC, id DESC LIMIT 1"
+        with self.get_connection() as conn:
+            row = conn.execute(query, values).fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row[0])
+        except (TypeError, json.JSONDecodeError):
+            return None
+
     def get_sku_economics(self, sku: str) -> Dict[str, float]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
